@@ -13,15 +13,13 @@ Architektur:
 
 from __future__ import annotations
 import os, json, time, asyncio, hmac, hashlib
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, cast
 from enum import Enum
-import numpy as np
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, StreamingResponse, JSONResponse
+from starlette.responses import PlainTextResponse, StreamingResponse
 
 load_dotenv()
 
@@ -72,7 +70,7 @@ class IoTClient(BaseModel):
     client_id: str
     device_type: str = "unknown"
     capability: DeviceCapability = DeviceCapability.MEDIUM
-    assigned_layers: List[int] = Field(default_factory=list)
+    assigned_layers: List[int] = Field(default_factory=lambda: cast(List[int], []))
     connected_at: float = Field(default_factory=lambda: time.time())
     last_heartbeat: float = Field(default_factory=lambda: time.time())
     tasks_completed: int = 0
@@ -83,23 +81,23 @@ class EmbeddingTask(BaseModel):
     task_id: str
     job_id: str
     task_type: TaskType
-    layer_range: tuple = (0, 6)  # Welche Layer berechnen
-    tokens: List[str] = Field(default_factory=list)
-    token_ids: List[int] = Field(default_factory=list)
+    layer_range: Tuple[int, int] = (0, 6)  # Welche Layer berechnen
+    tokens: List[str] = Field(default_factory=lambda: cast(List[str], []))
+    token_ids: List[int] = Field(default_factory=lambda: cast(List[int], []))
     status: str = "queued"
     client_id: Optional[str] = None
     created_at: float = Field(default_factory=lambda: time.time())
     deadline: float = 0.0
-    result: Optional[Dict] = None
+    result: Optional[Dict[str, Any]] = None
 
 class BERTScoreJob(BaseModel):
     """Ein vollständiger BERTScore-Berechnungsjob"""
     job_id: str
     reference_text: str
     candidate_text: str
-    tasks: List[EmbeddingTask] = Field(default_factory=list)
-    partial_embeddings: Dict[str, Any] = Field(default_factory=dict)
-    final_score: Optional[Dict] = None
+    tasks: List[EmbeddingTask] = Field(default_factory=lambda: cast(List[EmbeddingTask], []))
+    partial_embeddings: Dict[str, Any] = Field(default_factory=lambda: cast(Dict[str, Any], {}))
+    final_score: Optional[Dict[str, Any]] = None
     status: str = "pending"
     created_at: float = Field(default_factory=lambda: time.time())
 
@@ -107,7 +105,7 @@ class BERTScoreJob(BaseModel):
 # Globaler State
 # =========================
 clients: Dict[str, IoTClient] = {}
-clients_queues: Dict[str, asyncio.Queue] = {}
+clients_queues: Dict[str, asyncio.Queue[Dict[str, Any]]] = {}
 clients_inflight: Dict[str, int] = {}
 jobs: Dict[str, BERTScoreJob] = {}
 pending_tasks: List[EmbeddingTask] = []
@@ -128,7 +126,7 @@ def _tokenize_simple(text: str) -> List[str]:
     # Placeholder - in echt würde hier TinyBERT-Tokenizer laufen
     return text.lower().split()
 
-def _get_best_client(task_type: TaskType, required_layers: tuple) -> Optional[str]:
+def _get_best_client(task_type: TaskType, required_layers: Tuple[int, int]) -> Optional[str]:
     """
     Wählt den besten Client basierend auf:
     1. Capability (kann die Layer berechnen?)
@@ -138,7 +136,7 @@ def _get_best_client(task_type: TaskType, required_layers: tuple) -> Optional[st
     if not clients_queues:
         return None
     
-    suitable_clients = []
+    suitable_clients: List[Tuple[str, IoTClient]] = []
     for cid, client in clients.items():
         if cid not in clients_queues:
             continue
@@ -167,7 +165,7 @@ def _get_best_client(task_type: TaskType, required_layers: tuple) -> Optional[st
     
     return suitable_clients[0][0]
 
-def _split_into_layer_chunks(num_clients: int) -> List[tuple]:
+def _split_into_layer_chunks(num_clients: int) -> List[Tuple[int, int]]:
     """
     Teilt die TinyBERT-Layer auf verfügbare Clients auf
     
@@ -184,7 +182,7 @@ def _split_into_layer_chunks(num_clients: int) -> List[tuple]:
     compute_clients = num_clients - 1
     layers_per_client = TINYBERT_LAYERS // compute_clients
     
-    chunks = []
+    chunks: List[Tuple[int, int]] = []
     for i in range(compute_clients):
         start = i * layers_per_client
         end = start + layers_per_client if i < compute_clients - 1 else TINYBERT_LAYERS
@@ -212,7 +210,7 @@ async def _deliver_task(client_id: str, task: EmbeddingTask):
     task.status = "assigned"
     task.deadline = time.time() + ASSIGN_TTL
     
-    message = {
+    message: Dict[str, Any] = {
         "type": "task",
         "task_id": task.task_id,
         "job_id": task.job_id,
@@ -254,7 +252,7 @@ async def _watch_task_expiry(task: EmbeddingTask):
 
 async def _drain_pending_tasks():
     """Verteilt wartende Tasks wenn Clients verfügbar werden"""
-    remaining = []
+    remaining: List[EmbeddingTask] = []
     for task in pending_tasks:
         client_id = _get_best_client(task.task_type, task.layer_range)
         if client_id is None:
@@ -268,13 +266,13 @@ async def _drain_pending_tasks():
 # =========================
 # Embedding-Aggregation
 # =========================
-def _aggregate_embeddings(job: BERTScoreJob) -> Dict:
+def _aggregate_embeddings(job: BERTScoreJob) -> Dict[str, Any]:
     """
     Kombiniert Teil-Embeddings von verschiedenen IoT-Geräten
     zu einem vollständigen Embedding-Vektor
     """
     # Sammle alle Teil-Embeddings sortiert nach Layer
-    all_embeddings = []
+    all_embeddings: List[Dict[str, Any]] = []
     for task in job.tasks:
         if task.status == "done" and task.result:
             all_embeddings.append({
@@ -286,7 +284,7 @@ def _aggregate_embeddings(job: BERTScoreJob) -> Dict:
     all_embeddings.sort(key=lambda x: x["layer_range"][0])
     
     # Kombiniere (in echt: komplexere Aggregation nötig)
-    combined = []
+    combined: List[float] = []
     for emb in all_embeddings:
         combined.extend(emb.get("embedding", []))
     
@@ -296,7 +294,7 @@ def _aggregate_embeddings(job: BERTScoreJob) -> Dict:
         "total_dim": len(combined)
     }
 
-def _calculate_bertscore(ref_embedding: List, cand_embedding: List) -> Dict:
+def _calculate_bertscore(ref_embedding: List[float], cand_embedding: List[float]) -> Dict[str, Any]:
     """
     Berechnet BERTScore aus aggregierten Embeddings
     
@@ -328,7 +326,7 @@ async def bertscore_compute(
     reference: str,
     candidate: str,
     distributed: bool = True
-) -> dict:
+) -> Dict[str, Any]:
     """
     Berechnet BERTScore für Reference vs. Candidate Text.
     
@@ -416,7 +414,7 @@ async def bertscore_compute(
     }
 
 @mcp.tool(tags={"public"})
-async def bertscore_status(job_id: str) -> dict:
+async def bertscore_status(job_id: str) -> Dict[str, Any]:
     """
     Prüft den Status eines laufenden BERTScore-Jobs.
     
@@ -460,7 +458,7 @@ async def register_iot_client(
     client_id: str,
     device_type: str = "unknown",
     capability: str = "medium"
-) -> dict:
+) -> Dict[str, Any]:
     """
     Registriert ein neues IoT-Gerät als Worker.
     
@@ -507,9 +505,9 @@ async def submit_task_result(
     task_id: str,
     job_id: str,
     client_id: str,
-    embedding: list,
+    embedding: List[float],
     latency_ms: float = 0.0
-) -> dict:
+) -> Dict[str, Any]:
     """
     Empfängt Ergebnis einer Task-Berechnung von einem IoT-Gerät.
     
@@ -559,7 +557,7 @@ async def submit_task_result(
     }
 
 @mcp.tool(tags={"public"})
-async def get_system_stats() -> dict:
+async def get_system_stats() -> Dict[str, Any]:
     """
     Gibt Statistiken über das verteilte System zurück.
     
@@ -619,7 +617,7 @@ async def sse_handler(request: Request):
                     yield f"data: {json.dumps({'type': 'heartbeat', 'ts': _now_ms()})}\n\n"
                     if client_id in clients:
                         clients[client_id].last_heartbeat = time.time()
-            except Exception as e:
+            except Exception:
                 break
     
     return StreamingResponse(
@@ -632,7 +630,7 @@ async def sse_handler(request: Request):
     )
 
 # Route registrieren
-mcp.add_route(SSE_PATH, sse_handler, methods=["GET"])
+mcp.add_route(SSE_PATH, sse_handler, methods=["GET"])  # type: ignore[attr-defined]
 
 # =========================
 # Main
@@ -643,4 +641,4 @@ if __name__ == "__main__":
     print(f"📡 SSE Endpoint: {SSE_PATH}")
     print(f"⏱️  Task TTL: {ASSIGN_TTL}s")
     print(f"📊 Max inflight per client: {MAX_INFLIGHT_PER_CLIENT}")
-    uvicorn.run(mcp, host=HOST, port=PORT)
+    uvicorn.run(mcp, host=HOST, port=PORT)  # type: ignore[arg-type]
