@@ -99,6 +99,7 @@ mcp_paperstream_server/
 │   ├── __init__.py
 │   ├── biobert_handler.py # BioBERT Embeddings + Term Expansion
 │   ├── biomedclip_handler.py # Bildvalidierung
+│   ├── download_model.py # Download biobert to ../models
 │   └── sd_api_client.py   # AUTOMATIC1111 API Client
 ├── models/
 ├── prompts/
