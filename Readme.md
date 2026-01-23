@@ -1,37 +1,55 @@
 # 🧬 MCP-PaperStream
 
-**Distributed MCP Server for Scientific Paper Review** combining BERTScore computation across IoT edge devices with Stable Diffusion integration for scientific visualizations.
+**Distributed MCP Server for Scientific Paper Validation** - A gamified platform where Android devices validate scientific papers through crowdsourced BERTScore computation.
+
+## 🎯 Core Concept
+
+```
+n8n Workflow → Submit Papers → MCP Server → Create Jobs
+                                    ↓
+              Android Devices ← Fetch Jobs ← SQLite DB
+                    ↓
+            Validate Sections → Submit Results → Consensus
+                                                    ↓
+                              Unity Game ← SSE Updates ← Leaderboard
+```
 
 ---
 
 ## 📊 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     MCP SERVER (FastMCP 2.x)                    │
-│  ┌─────────────────┐   ┌──────────────────┐   ┌──────────────┐  │
-│  │  BioBERT/       │   │  Prompt Builder   │   │  SD API      │  │
-│  │  DistilBioBERT  │──▶│  (8 Templates)    │──▶│  Client      │  │
-│  │  Tokenizer      │   │                   │   │              │  │
-│  └─────────────────┘   └──────────────────┘   └──────┬───────┘  │
-│           │                                          │          │
-│           │            ┌─────────────────┐           │          │
-│           └───────────▶│  BiomedCLIP     │◀──────────┘          │
-│                        │  (Validation)    │                      │
-│                        └─────────────────┘                      │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │           Distributed BERTScore (IoT Workers)               ││
-│  │   ESP32 ──▶ Layer 0    RPi4 ──▶ Layer 0-2    Phone ──▶ 0-5  ││
-│  │   (LOW)                (MEDIUM)              (HIGH)          ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│           AUTOMATIC1111 STABLE DIFFUSION WEBUI                  │
-│                    http://127.0.0.1:7860                         │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PaperStream MCP Server v1.0                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐              │
+│  │  REST API   │    │   MCP API   │    │  Unity SSE  │              │
+│  │  /api/*     │    │   /mcp      │    │  /stream    │              │
+│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘              │
+│         │                  │                   │                     │
+│  ┌──────┴──────────────────┴───────────────────┴──────┐             │
+│  │                   Starlette App                     │             │
+│  └─────────────────────────┬───────────────────────────┘             │
+│                            │                                         │
+│  ┌─────────────────────────┴───────────────────────────┐             │
+│  │                     Handlers                         │             │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────┐ │             │
+│  │  │  Paper   │  │   Rule   │  │   Job    │  │Device│ │             │
+│  │  │ Handler  │  │ Handler  │  │ Handler  │  │Handler│             │
+│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬───┘ │             │
+│  └───────┼─────────────┼─────────────┼────────────┼─────┘             │
+│          │             │             │            │                   │
+│  ┌───────┴─────────────┴─────────────┴────────────┴─────┐             │
+│  │                    SQLite Database                    │             │
+│  │  papers | rules | jobs | devices | results | consensus│             │
+│  └───────────────────────────────────────────────────────┘             │
+│                                                                      │
+│  ┌─────────────────────────┐    ┌─────────────────────────┐          │
+│  │      BioBERT Handler    │    │   Paper Processor       │          │
+│  │   (Embeddings, 768-dim) │    │ (PDF → Sections → Voxels)│          │
+│  └─────────────────────────┘    └─────────────────────────┘          │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -40,8 +58,8 @@
 
 ### Prerequisites
 - Python 3.12
-- AUTOMATIC1111 Stable Diffusion WebUI running with `--api`
 - ~2GB disk space for models
+- (Optional) AUTOMATIC1111 Stable Diffusion WebUI
 
 ### Installation
 
@@ -55,23 +73,46 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install torch transformers fastmcp pyyaml httpx pillow python-dotenv
+pip install torch transformers fastmcp pyyaml httpx pillow python-dotenv aiohttp uvicorn starlette
 
-# Optional: BiomedCLIP support
-pip install open_clip_torch
+# Optional: PDF processing
+pip install PyMuPDF
 
-# Download models (first run will auto-download from HuggingFace)
+# Download models (auto-downloads from HuggingFace on first use)
 python -m src.paperstream.handlers.download_model all
 ```
 
 ### Start Server
 
 ```bash
-# Make sure SD WebUI is running with --api flag first!
+# Integrated server (recommended)
 ./start_server.sh
 
 # Or manually:
-.venv/bin/uvicorn src.paperstream.server:mcp --host 0.0.0.0 --port 8089
+.venv/bin/python -m uvicorn src.paperstream.server_integrated:app --host 0.0.0.0 --port 8089
+
+# MCP-only mode (BERTScore IoT):
+./start_server.sh mcp
+```
+
+### Test Endpoints
+
+```bash
+# Health check
+curl http://localhost:8089/health
+
+# Submit paper (n8n webhook)
+curl -X POST http://localhost:8089/api/papers/submit \
+  -H "Content-Type: application/json" \
+  -d '{"paper_id": "PMC12345", "title": "My Paper", "priority": 7}'
+
+# Create rule
+curl -X POST http://localhost:8089/api/rules/create \
+  -H "Content-Type: application/json" \
+  -d '{"rule_id": "is_rct", "question": "Is this a RCT?", "positive_phrases": ["randomized controlled trial"]}'
+
+# Get stats
+curl http://localhost:8089/api/stats
 ```
 
 ---
@@ -80,159 +121,155 @@ python -m src.paperstream.handlers.download_model all
 
 ```
 src/paperstream/
-├── server.py              # MCP server - task distribution, SSE, job management
+├── server_integrated.py   # Main server (REST + MCP + SSE)
+├── server.py              # MCP-only server (BERTScore IoT)
 ├── config.yaml            # Central configuration
-├── handlers/
-│   ├── biobert_handler.py    # BioBERT tokenization & embeddings
-│   ├── biomedclip_handler.py # Text-image similarity (optional)
-│   ├── sd_api_client.py      # AUTOMATIC1111 SD WebUI API client
-│   └── download_model.py     # Model download utility
-├── models/                # Local model cache
-│   ├── biobert/
-│   └── biomedclip/
-└── prompts/
-    ├── scientific_templates.py  # 8 SD prompt templates
-    └── term_mappings.json       # Scientific vocabulary mappings
+│
+├── db/                    # Database Layer
+│   ├── database.py        # SQLite manager
+│   ├── models.py          # Dataclass models
+│   └── migrations/        # SQL schema
+│
+├── api/                   # API Handlers
+│   ├── paper_handler.py   # Paper CRUD
+│   ├── rule_handler.py    # Rule management + BioBERT
+│   ├── job_handler.py     # Job distribution
+│   ├── device_handler.py  # Device registration
+│   └── sse_stream.py      # Unity SSE stream
+│
+├── pipeline/              # Processing Pipeline
+│   ├── paper_processor.py # PDF → Sections → Voxels
+│   └── consensus_engine.py# Result aggregation
+│
+├── handlers/              # ML Handlers
+│   ├── biobert_handler.py # BioBERT embeddings
+│   ├── sd_api_client.py   # Stable Diffusion API
+│   └── biomedclip_handler.py # BiomedCLIP (optional)
+│
+└── prompts/               # Prompt Templates
+    ├── scientific_templates.py
+    └── term_mappings.json
 ```
+
+---
+
+## 🔌 API Endpoints
+
+### Papers (n8n Webhooks)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/papers/submit` | Submit new paper |
+| GET | `/api/papers` | List all papers |
+| GET | `/api/papers/{id}` | Get paper details |
+
+### Rules
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/rules/create` | Create validation rule |
+| GET | `/api/rules` | List active rules |
+
+### Jobs (Android)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/jobs/next?device_id=xxx` | Get next jobs |
+| POST | `/api/validation/submit` | Submit results |
+
+### Devices
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/devices/register` | Register device |
+| GET | `/api/devices/{id}` | Get device info |
+
+### Unity
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/stream/unity` | SSE stream |
+| GET | `/api/consensus/{paper_id}` | Validation status |
+
+### System
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/api/stats` | System statistics |
+
+See [docs/API.md](docs/API.md) for full documentation.
+
+---
+
+## 🎮 Gamification
+
+### Point System
+- Base: 10 points per validation
+- Similarity bonus: up to 40 points
+- Confidence bonus: up to 30 points
+- Match found: +20 points
+
+### Leaderboard
+- Tracks total points, papers validated, matches found
+- Real-time updates via SSE to Unity
 
 ---
 
 ## 🔧 Configuration
 
-All settings in `src/paperstream/config.yaml`:
+Edit `src/paperstream/config.yaml`:
 
 ```yaml
 server:
   host: "0.0.0.0"
   port: 8089
-  sse_path: "/sse-bertscore"
 
 models:
   biobert:
-    model_name: "nlpie/distil-biobert"
-  biomedclip:
-    model_name: "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    name: "nlpie/distil-biobert"
+    path: "./src/paperstream/models/biobert"
 
-stable_diffusion:
-  api_url: "http://127.0.0.1:7860"
-  timeout: 120
+consensus:
+  min_votes: 3
+  agreement_threshold: 0.6
 
-iot:
-  assign_ttl: 30
-  tinybert_layers: 6
-```
-
-Environment variables override config:
-- `FASTMCP_HOST`, `FASTMCP_PORT`
-- `BERTSCORE_HMAC` (for task signing)
-
----
-
-## 🛠️ MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `bertscore_compute` | Compute BERTScore (distributed or local) |
-| `bertscore_status` | Check job status |
-| `register_iot_client` | Register IoT device as worker |
-| `submit_task_result` | Submit embedding result from worker |
-| `get_system_stats` | Get system statistics |
-
-### Example: BERTScore Computation
-
-```python
-# Via MCP client
-result = await client.call_tool("bertscore_compute", {
-    "reference": "The mitochondria is the powerhouse of the cell.",
-    "candidate": "Mitochondria produce ATP through cellular respiration.",
-    "distributed": True
-})
+jobs:
+  ttl_seconds: 300
+  max_per_device: 5
 ```
 
 ---
 
-## 🎨 Prompt Templates
+## 📋 Data Flow
 
-8 scientific visualization templates available:
-
-| Template | Use Case |
-|----------|----------|
-| `cell_diagram` | Cell structure diagrams |
-| `molecular_structure` | Molecular/chemical structures |
-| `anatomical` | Anatomical illustrations |
-| `process_flow` | Biological process flows |
-| `microscopy` | Microscopy-style images |
-| `protein_structure` | Protein/enzyme structures |
-| `pathway_diagram` | Metabolic/signaling pathways |
-| `tissue_section` | Histological sections |
-
-```python
-from src.paperstream.prompts import get_template
-
-prompt = get_template('cell_diagram', {
-    'cell_type': 'neuron',
-    'organelles': 'axon, dendrites, nucleus'
-})
-# Returns: {'prompt': '...', 'negative_prompt': '...', 'steps': 25, ...}
-```
-
----
-
-## 📡 IoT Worker Integration
-
-### Device Capabilities
-
-| Capability | Devices | Assigned Layers |
-|------------|---------|-----------------|
-| `LOW` | ESP32, RPi Zero | Layer 0 only |
-| `MEDIUM` | RPi 4, old phones | Layers 0-2 |
-| `HIGH` | Modern phones, tablets | All 6 layers |
-
-### Register Worker
-
-```python
-result = await client.call_tool("register_iot_client", {
-    "client_id": "rpi4-kitchen",
-    "device_type": "raspberry_pi",
-    "capability": "medium"
-})
-```
-
-### SSE Task Stream
-
-Workers connect to `/sse-bertscore?client_id=<id>` to receive tasks.
+1. **n8n submits paper** → `POST /api/papers/submit`
+2. **Paper processing** → Extract sections, generate embeddings, create voxels
+3. **Job creation** → One job per (paper × section × rule)
+4. **Android fetches jobs** → `GET /api/jobs/next`
+5. **Android validates** → Compare embeddings locally
+6. **Submit results** → `POST /api/validation/submit`
+7. **Consensus calculation** → Majority vote after 3+ submissions
+8. **Unity notified** → SSE event: `paper_validated`
 
 ---
 
 ## 🧪 Testing
 
 ```bash
-# Run all tests
-.venv/bin/python -c "
-from src.paperstream import mcp
-from src.paperstream.handlers import get_biobert_handler, get_sd_client
-from src.paperstream.prompts import TEMPLATES
-
-print(f'✅ MCP Server: {mcp.name}')
-print(f'✅ Templates: {len(TEMPLATES)}')
-
-handler = get_biobert_handler()
-tokens, ids = handler.tokenize('DNA replication')
-print(f'✅ BioBERT: {len(tokens)} tokens')
-
-client = get_sd_client()
-print(f'✅ SD Client: {client.api_url}')
+# Test all modules
+python -c "
+from src.paperstream.db import get_db
+from src.paperstream.api import get_paper_handler, get_rule_handler
+from src.paperstream.pipeline import get_consensus_engine
+print('All modules OK')
 "
+
+# Initialize database
+python -c "
+from src.paperstream.db import get_db
+db = get_db()
+db.initialize()
+print(f'DB: {db.db_path}')
+"
+
+# Load default rules
+curl http://localhost:8089/api/stats
 ```
-
----
-
-## 📚 Models Used
-
-| Model | HuggingFace ID | Size | Purpose |
-|-------|----------------|------|---------|
-| **DistilBioBERT** | `nlpie/distil-biobert` | 265MB | Tokenization & Embeddings |
-| **BiomedCLIP** | `microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224` | ~400MB | Image-Text Validation |
 
 ---
 
@@ -242,9 +279,14 @@ MIT License - see LICENSE file.
 
 ---
 
-## 🔗 Links
+## 🤝 Contributing
 
-- [FastMCP Documentation](https://github.com/jlowin/fastmcp)
-- [AUTOMATIC1111 WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
-- [DistilBioBERT](https://huggingface.co/nlpie/distil-biobert)
-- [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224)
+1. Fork the repository
+2. Create feature branch
+3. Submit pull request
+
+---
+
+## 📞 Support
+
+Open an issue on GitHub for bugs or feature requests.

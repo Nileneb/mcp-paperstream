@@ -1,681 +1,509 @@
-# 📋 mcp-paperstream TODO-Liste & Datenfluss-Dokumentation
+# 🔧 MCP-Server TODO: PaperRun Backend
 
-> **Stand:** 23.01.2026  
-> **Status:** 🔴 Viele Handler noch leer, server.py funktionsfähig aber nicht integriert
-
----
-
-## 🏗️ Projektstruktur
-
-```
-mcp-paperstream/
-├── smythery.yaml          ⚠️ Prüfen auf optimierungsmöglichkeiten
-├── uv.lock                ⚠️ Prüfen auf optimierungsmöglichkeiten
-└── src/paperstream/
-    ├── __init__.py        ❌ LEER
-    ├── config.yaml        ❌ LEER
-    ├── server.py          ✅ FUNKTIONIERT (DiffusionBERTScore IoT Server)
-    ├── handlers/
-    │   ├── __init__.py            ❌ LEER
-    │   ├── biobert_handler.py     ❌ LEER
-    │   ├── biomedclip_handler.py  ❌ LEER
-    │   ├── download_model.py      ⚠️ STANDALONE (nicht als Modul nutzbar)
-    │   └── sd_api_client.py       ❌ LEER
-    └── prompts/
-        ├── __init__.py            ❌ LEER
-        ├── scientific_templates.py ❌ LEER
-        └── term_mappings.json      ❌ LEER
-```
+## 🎯 Ziel
+n8n Agent sendet Papers und Regeln → MCP-Server speichert in SQLite → Android Devices holen ab und validieren
 
 ---
 
-## 🚨 KRITISCHE INKONSISTENZEN
+## ✅ Implementierungs-Status
 
+### Phase 1: Database & Core API ✅ DONE
+- [x] SQLite Schema erstellt (`db/migrations/001_create_tables.sql`)
+- [x] Database Manager implementiert (`db/database.py`)
+- [x] Models definiert (`db/models.py`)
+- [x] POST /api/papers/submit (n8n Webhook)
+- [x] POST /api/rules/create (BioBERT Embeddings)
 
+### Phase 2: BioBERT Rule Generator ✅ DONE
+- [x] RuleHandler mit BioBERT Integration
+- [x] Positive/Negative Phrase Embeddings
+- [x] 6 Default Rules definiert
 
-### 2. Modell-Pfad Inkonsistenz
-| Datei | Pfad | Problem |
-|-------|------|---------|
-| `download_model.py` | `../models/biobert/distil-biobert` | Relativer Pfad, hängt vom Ausführungsort ab |
-| `server.py` | Kein Modell-Pfad definiert | Nutzt noch Placeholder-Tokenizer |
+### Phase 3: Paper Processing Pipeline ✅ DONE
+- [x] PDF Download (async mit aiohttp)
+- [x] PDF → PNG Rendering (PyMuPDF)
+- [x] Text Extraction & Section Detection
+- [x] BioBERT Embedding Generation
+- [x] Voxel Converter (768-dim → 8x8x12)
 
-**FIX:** Absoluten Pfad in `config.yaml` definieren, beide Skripte lesen daraus
+### Phase 4: Job Distribution & Android API ✅ DONE
+- [x] GET /api/jobs/next (mit Embeddings)
+- [x] POST /api/validation/submit
+- [x] Device Registration & Tracking
+- [x] Fair Job Distribution
 
-### 3. server.py nutzt NICHT die Handler
-`server.py` hat eigene `_tokenize_simple()` Funktion statt `biobert_handler.py` zu nutzen!
+### Phase 5: Consensus Engine ✅ DONE
+- [x] Ergebnis-Aggregation
+- [x] Mehrheitsentscheidung
+- [x] Agreement Ratio
+- [x] Min 3 Votes für Validierung
 
----
+### Phase 6: Unity SSE & Gamification ✅ DONE
+- [x] GET /api/stream/unity (SSE)
+- [x] Events: paper_validated, leaderboard_update, etc.
+- [x] Leaderboard mit Punktesystem
 
-## 📁 DATEI-SPEZIFISCHE TODOs
-
----
-
-### 📄 `src/paperstream/__init__.py`
-
-**Aufgabe:** Package initialisieren, Submodule exportieren
-
-**INPUT:** Keine  
-**VERARBEITUNG:** Imports definieren  
-**OUTPUT:** Verfügbare Module/Klassen
-
-```python
-# TODO: Implementieren
-from .server import mcp
-from .handlers import biobert_handler, biomedclip_handler, sd_api_client
-
-__version__ = "0.1.0"
-__all__ = ["mcp", "biobert_handler", "biomedclip_handler", "sd_api_client"]
-```
-
----
-
-### 📄 `src/paperstream/config.yaml`
-
-**Aufgabe:** Zentrale Konfiguration für alle Module
-
-**INPUT:** Keine (wird von anderen Modulen gelesen)  
-**VERARBEITUNG:** YAML-Parsing  
-**OUTPUT:** Konfigurationswerte
-
-```yaml
-# TODO: Implementieren
-server:
-  host: "0.0.0.0"
-  port: 8089
-  sse_path: "/sse-bertscore"
-  result_path: "/bert-result"
-
-models:
-  biobert:
-    path: "./models/biobert/distil-biobert"
-    model_name: "nlpie/distil-biobert"
-  biomedclip:
-    path: "./models/biomedclip"
-    model_name: "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
-
-stable_diffusion:
-  api_url: "http://127.0.0.1:7860"
-  timeout: 60
-
-iot:
-  assign_ttl: 30
-  max_inflight_per_client: 1
-  min_clients_for_distributed: 2
-  tinybert_layers: 6
-  embedding_dim: 312
-```
+### Phase 7: Vision Encoder ⏳ OPTIONAL
+- [ ] BLIP-2/SigLIP Integration (für Bild-basierte Validierung)
 
 ---
 
-### 📄 `src/paperstream/server.py` ✅
+## 📊 Datenbank-Schema (Implementiert)
 
-**Status:** Funktioniert, aber verwendet Placeholder statt echte Handler
+### Priorität: ⚡ KRITISCH - Zuerst implementieren!
 
-**Aufgabe:** MCP Server für verteilte BERTScore-Berechnung
-
-**INPUT:**  
-- REST-Requests (BERTScore-Anfragen)
-- SSE-Verbindungen (IoT-Clients)
-- Task-Results (von IoT-Workern)
-
-**VERARBEITUNG:**  
-- Job erstellen → Tasks aufteilen → an IoT-Clients verteilen
-- Embeddings aggregieren → BERTScore berechnen
-
-**OUTPUT:**  
-- SSE-Events (Tasks an Clients)
-- JSON-Responses (Job-Status, Scores)
-
-**TODOs:**
-| Zeile | Problem | Fix |
-|-------|---------|-----|
-| 72 | `_tokenize_simple()` = Placeholder | `biobert_handler.tokenize()` nutzen |
-| - | Kein Config-Loader | `config.yaml` einlesen |
-| - | Hardcoded Konstanten | Aus Config laden |
-
-```python
-# ÄNDERN von:
-def _tokenize_simple(text: str) -> List[str]:
-    return text.lower().split()
-
-# ZU:
-from .handlers.biobert_handler import BioBERTHandler
-biobert = BioBERTHandler()
-
-def _tokenize(text: str) -> Tuple[List[str], List[int]]:
-    return biobert.tokenize(text)
-```
-
----
-
-### 📄 `src/paperstream/handlers/__init__.py`
-
-**Aufgabe:** Handler-Submodule exportieren
-
-```python
-# TODO: Implementieren
-from .biobert_handler import BioBERTHandler
-from .biomedclip_handler import BiomedCLIPHandler
-from .sd_api_client import StableDiffusionClient
-
-__all__ = ["BioBERTHandler", "BiomedCLIPHandler", "StableDiffusionClient"]
-```
-
----
-
-### 📄 `src/paperstream/handlers/biobert_handler.py` ❌
-
-**Aufgabe:** BioBERT/TinyBERT Tokenisierung & Embedding-Berechnung
-
-**INPUT:**  
-- Text (str)
-- Optional: Layer-Range für partielle Berechnung
-
-**VERARBEITUNG:**  
-- Tokenisierung mit BioBERT-Tokenizer
-- Embedding-Berechnung (optional: nur bestimmte Layer)
-
-**OUTPUT:**  
-- Token-Liste (List[str])
-- Token-IDs (List[int])
-- Embeddings (List[float] oder torch.Tensor)
-
-```python
-# TODO: Implementieren
-"""
-BioBERT Handler für Tokenisierung und Embedding-Berechnung
-"""
-import os
-from typing import List, Tuple, Optional
-import torch
-from transformers import AutoTokenizer, AutoModel
-
-class BioBERTHandler:
-    """Handler für distil-biobert Modell"""
+```sql
+-- TABLE: papers
+-- Speichert alle Papers die evaluiert werden sollen
+CREATE TABLE papers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id TEXT UNIQUE NOT NULL,
+    title TEXT,
+    authors TEXT,
+    journal TEXT,
+    publication_date TEXT,
+    pdf_url TEXT,
+    pdf_local_path TEXT,
     
-    def __init__(self, model_path: str = "./models/biobert/distil-biobert"):
-        self.model_path = model_path
-        self._tokenizer = None
-        self._model = None
+    status TEXT DEFAULT 'pending',
+    downloaded_at TIMESTAMP,
+    processed_at TIMESTAMP,
     
-    @property
-    def tokenizer(self):
-        if self._tokenizer is None:
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-        return self._tokenizer
+    source TEXT DEFAULT 'n8n',
+    priority INTEGER DEFAULT 5,
     
-    @property
-    def model(self):
-        if self._model is None:
-            self._model = AutoModel.from_pretrained(self.model_path)
-            self._model.eval()
-        return self._model
-    
-    def tokenize(self, text: str) -> Tuple[List[str], List[int]]:
-        """
-        Tokenisiert Text mit BioBERT-Tokenizer.
-        
-        Args:
-            text: Eingabetext
-            
-        Returns:
-            (tokens, token_ids): Liste der Tokens und deren IDs
-        """
-        encoded = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-        token_ids = encoded["input_ids"][0].tolist()
-        tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
-        return tokens, token_ids
-    
-    def embed(
-        self, 
-        text: str, 
-        layer_range: Optional[Tuple[int, int]] = None
-    ) -> List[float]:
-        """
-        Berechnet Embeddings für Text.
-        
-        Args:
-            text: Eingabetext
-            layer_range: Optional (start, end) für partielle Layer-Ausgabe
-            
-        Returns:
-            Embedding-Vektor als Liste von Floats
-        """
-        with torch.no_grad():
-            encoded = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-            outputs = self.model(**encoded, output_hidden_states=True)
-            
-            if layer_range:
-                # Nur bestimmte Layer ausgeben
-                hidden_states = outputs.hidden_states[layer_range[0]:layer_range[1]]
-                # Mean über Layer und Tokens
-                embedding = torch.stack(hidden_states).mean(dim=[0, 2])
-            else:
-                # Letzter Layer, Mean über Tokens
-                embedding = outputs.last_hidden_state.mean(dim=1)
-            
-            return embedding.squeeze().tolist()
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-# Singleton für einfachen Import
-_handler: Optional[BioBERTHandler] = None
+CREATE INDEX idx_papers_status ON papers(status);
+CREATE INDEX idx_papers_priority ON papers(priority DESC);
 
-def get_handler() -> BioBERTHandler:
-    global _handler
-    if _handler is None:
-        _handler = BioBERTHandler()
-    return _handler
+
+-- TABLE: paper_sections
+-- Pro Paper: Abschnitte mit Embeddings und Voxel-Daten
+CREATE TABLE paper_sections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id TEXT NOT NULL,
+    section_name TEXT NOT NULL,
+    section_text TEXT,
+    
+    page_number INTEGER,
+    image_path TEXT,
+    embedding BLOB,
+    voxel_data TEXT,
+    
+    color_r REAL,
+    color_g REAL,
+    color_b REAL,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (paper_id) REFERENCES papers(paper_id)
+);
+
+CREATE INDEX idx_sections_paper ON paper_sections(paper_id);
+
+
+-- TABLE: rules
+-- Von BioBERT generierte Regeln
+CREATE TABLE rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id TEXT UNIQUE NOT NULL,
+    question TEXT NOT NULL,
+    
+    positive_phrases TEXT,
+    negative_phrases TEXT,
+    pos_embedding BLOB,
+    neg_embedding BLOB,
+    
+    threshold REAL DEFAULT 0.75,
+    
+    is_active BOOLEAN DEFAULT 1,
+    created_by TEXT DEFAULT 'system',
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+-- TABLE: validation_jobs
+-- Jobs die an Android Devices verteilt werden
+CREATE TABLE validation_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT UNIQUE NOT NULL,
+    paper_id TEXT NOT NULL,
+    section_id INTEGER NOT NULL,
+    rule_id TEXT NOT NULL,
+    
+    status TEXT DEFAULT 'pending',
+    assigned_to TEXT,
+    assigned_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    
+    is_match BOOLEAN,
+    similarity REAL,
+    confidence REAL,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (paper_id) REFERENCES papers(paper_id),
+    FOREIGN KEY (section_id) REFERENCES paper_sections(id),
+    FOREIGN KEY (rule_id) REFERENCES rules(rule_id)
+);
+
+CREATE INDEX idx_jobs_status ON validation_jobs(status);
+CREATE INDEX idx_jobs_paper ON validation_jobs(paper_id);
+
+
+-- TABLE: device_registry
+-- Registrierte Android Devices
+CREATE TABLE device_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT UNIQUE NOT NULL,
+    device_name TEXT,
+    device_model TEXT,
+    os_version TEXT,
+    app_version TEXT,
+    
+    jobs_completed INTEGER DEFAULT 0,
+    avg_processing_time REAL,
+    accuracy REAL,
+    
+    is_active BOOLEAN DEFAULT 1,
+    last_seen TIMESTAMP,
+    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+-- TABLE: validation_results
+-- Ergebnisse von Android Devices
+CREATE TABLE validation_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    section_id INTEGER NOT NULL,
+    
+    is_match BOOLEAN NOT NULL,
+    similarity REAL NOT NULL,
+    confidence REAL NOT NULL,
+    
+    points_earned INTEGER,
+    time_taken_ms INTEGER,
+    
+    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (job_id) REFERENCES validation_jobs(job_id),
+    FOREIGN KEY (device_id) REFERENCES device_registry(device_id),
+    FOREIGN KEY (paper_id) REFERENCES papers(paper_id)
+);
+
+CREATE INDEX idx_results_paper_rule ON validation_results(paper_id, rule_id);
+
+
+-- TABLE: paper_consensus
+-- Aggregierte Validierungs-Ergebnisse
+CREATE TABLE paper_consensus (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    
+    is_match BOOLEAN,
+    avg_similarity REAL,
+    avg_confidence REAL,
+    vote_count INTEGER,
+    agreement_ratio REAL,
+    
+    found_in_sections TEXT,
+    
+    is_validated BOOLEAN DEFAULT 0,
+    min_votes_required INTEGER DEFAULT 3,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE(paper_id, rule_id)
+);
+
+
+-- TABLE: leaderboard
+-- Gamification: Spieler-Rangliste
+CREATE TABLE leaderboard (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT UNIQUE NOT NULL,
+    player_name TEXT,
+    
+    total_points INTEGER DEFAULT 0,
+    papers_validated INTEGER DEFAULT 0,
+    matches_found INTEGER DEFAULT 0,
+    accuracy REAL,
+    
+    achievements TEXT,
+    
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (device_id) REFERENCES device_registry(device_id)
+);
 ```
 
 ---
 
-### 📄 `src/paperstream/handlers/biomedclip_handler.py` ❌
+## 🔌 API Endpoints
 
-**Aufgabe:** BiomedCLIP für Text-Bild-Ähnlichkeit
+### Priorität: ⚡ KRITISCH
 
-**INPUT:**  
-- Text (str) ODER
-- Bild (PIL.Image oder Pfad)
-
-**VERARBEITUNG:**  
-- Text-/Bild-Encoding mit BiomedCLIP
-- Similarity-Score berechnen
-
-**OUTPUT:**  
-- Text-Embedding (List[float])
-- Bild-Embedding (List[float])
-- Similarity-Score (float)
-
-```python
-# TODO: Implementieren
-"""
-BiomedCLIP Handler für Text-Bild-Vergleiche
-"""
-from typing import List, Union, Optional
-from PIL import Image
-import torch
-
-class BiomedCLIPHandler:
-    """Handler für BiomedCLIP Modell"""
-    
-    def __init__(self, model_path: str = "./models/biomedclip"):
-        self.model_path = model_path
-        self._model = None
-        self._processor = None
-    
-    def encode_text(self, text: str) -> List[float]:
-        """Berechnet Text-Embedding"""
-        # TODO: Implementieren
-        raise NotImplementedError("BiomedCLIP noch nicht implementiert")
-    
-    def encode_image(self, image: Union[str, Image.Image]) -> List[float]:
-        """Berechnet Bild-Embedding"""
-        # TODO: Implementieren
-        raise NotImplementedError("BiomedCLIP noch nicht implementiert")
-    
-    def similarity(self, text: str, image: Union[str, Image.Image]) -> float:
-        """Berechnet Text-Bild-Ähnlichkeit (0-1)"""
-        # TODO: Implementieren
-        raise NotImplementedError("BiomedCLIP noch nicht implementiert")
+#### 1. n8n Webhook: Paper einreichen
 ```
+POST /api/papers/submit
+Content-Type: application/json
 
----
-
-### 📄 `src/paperstream/handlers/sd_api_client.py` ❌
-
-**Aufgabe:** Client für AUTOMATIC1111 Stable Diffusion WebUI API
-
-**INPUT:**  
-- Prompt (str)
-- Negative Prompt (str)
-- Parameter (CFG Scale, Steps, Sampler, etc.)
-
-**VERARBEITUNG:**  
-- HTTP-Request an SD WebUI API
-- Bild aus Base64 dekodieren
-
-**OUTPUT:**  
-- Generiertes Bild (PIL.Image)
-- Seed (int)
-- Generation-Info (dict)
-
-```python
-# TODO: Implementieren
-"""
-Stable Diffusion API Client für AUTOMATIC1111 WebUI
-"""
-import base64
-import httpx
-from io import BytesIO
-from typing import Dict, Any, Optional, List
-from PIL import Image
-
-class StableDiffusionClient:
-    """Client für SD WebUI API"""
-    
-    def __init__(self, api_url: str = "http://127.0.0.1:7860"):
-        self.api_url = api_url.rstrip("/")
-        self.timeout = 120.0
-    
-    async def txt2img(
-        self,
-        prompt: str,
-        negative_prompt: str = "",
-        steps: int = 20,
-        cfg_scale: float = 7.0,
-        width: int = 512,
-        height: int = 512,
-        sampler: str = "DPM++ 2M Karras",
-        seed: int = -1,
-    ) -> Dict[str, Any]:
-        """
-        Generiert Bild aus Text-Prompt.
-        
-        Returns:
-            {
-                "image": PIL.Image,
-                "seed": int,
-                "info": dict
-            }
-        """
-        payload = {
-            "prompt": prompt,
-            "negative_prompt": negative_prompt,
-            "steps": steps,
-            "cfg_scale": cfg_scale,
-            "width": width,
-            "height": height,
-            "sampler_name": sampler,
-            "seed": seed,
-        }
-        
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.api_url}/sdapi/v1/txt2img",
-                json=payload
-            )
-            response.raise_for_status()
-            result = response.json()
-        
-        # Bild dekodieren
-        img_data = base64.b64decode(result["images"][0])
-        image = Image.open(BytesIO(img_data))
-        
-        return {
-            "image": image,
-            "seed": result.get("seed", seed),
-            "info": result.get("info", {}),
-        }
-    
-    async def health_check(self) -> bool:
-        """Prüft ob SD WebUI erreichbar ist"""
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{self.api_url}/sdapi/v1/options")
-                return response.status_code == 200
-        except Exception:
-            return False
-```
-
----
-
-### 📄 `src/paperstream/handlers/download_model.py` ⚠️
-
-**Status:** Funktioniert, aber nicht als Modul nutzbar
-
-**Aufgabe:** Modelle von HuggingFace herunterladen und lokal speichern
-
-**FIX:**
-```python
-# ÄNDERN von:
-tokenizer.save_pretrained("../models/biobert/distil-biobert")
-
-# ZU:
-"""
-Model Download Utility
-Nutzt Pfade aus config.yaml
-"""
-import os
-import yaml
-from pathlib import Path
-from transformers import AutoTokenizer, AutoModel
-
-def get_config():
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    if config_path.exists():
-        with open(config_path) as f:
-            return yaml.safe_load(f)
-    return {}
-
-def download_biobert(save_path: str = None):
-    """Lädt distil-biobert herunter und speichert lokal"""
-    config = get_config()
-    
-    model_name = config.get("models", {}).get("biobert", {}).get(
-        "model_name", "nlpie/distil-biobert"
-    )
-    save_path = save_path or config.get("models", {}).get("biobert", {}).get(
-        "path", "./models/biobert/distil-biobert"
-    )
-    
-    print(f"📥 Lade {model_name}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
-    
-    os.makedirs(save_path, exist_ok=True)
-    tokenizer.save_pretrained(save_path)
-    model.save_pretrained(save_path)
-    print(f"✅ Gespeichert in {save_path}")
-
-if __name__ == "__main__":
-    download_biobert()
-```
-
----
-
-### 📄 `src/paperstream/prompts/__init__.py`
-
-```python
-# TODO: Implementieren
-from .scientific_templates import get_template, TEMPLATES
-from .term_mappings import get_visual_terms
-
-__all__ = ["get_template", "TEMPLATES", "get_visual_terms"]
-```
-
----
-
-### 📄 `src/paperstream/prompts/scientific_templates.py` ❌
-
-**Aufgabe:** Prompt-Templates für wissenschaftliche Visualisierungen
-
-**INPUT:**  
-- Template-Name (str)
-- Variablen (dict)
-
-**OUTPUT:**  
-- Fertiger SD-Prompt (str)
-
-```python
-# TODO: Implementieren
-"""
-Scientific Prompt Templates für Stable Diffusion
-"""
-from typing import Dict, Any
-
-TEMPLATES = {
-    "cell_diagram": {
-        "base": "scientific diagram of {cell_type} cell, labeled parts, "
-                "textbook illustration style, white background, high detail",
-        "negative": "photo, realistic, blurry, text, watermark",
-    },
-    "molecular_structure": {
-        "base": "3D molecular structure of {molecule}, ball-and-stick model, "
-                "scientific visualization, clean background",
-        "negative": "cartoon, sketch, blurry",
-    },
-    "anatomical": {
-        "base": "medical illustration of {organ}, anatomical cross-section, "
-                "labeled diagram, textbook style",
-        "negative": "photo, x-ray, blurry, gore",
-    },
-    "process_flow": {
-        "base": "scientific flowchart showing {process}, arrows, labeled steps, "
-                "infographic style, clean design",
-        "negative": "photo, 3D, complex background",
-    },
-}
-
-def get_template(name: str, variables: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Füllt Template mit Variablen.
-    
-    Args:
-        name: Template-Name (z.B. "cell_diagram")
-        variables: Dict mit Platzhaltern (z.B. {"cell_type": "neuron"})
-    
-    Returns:
-        {"prompt": str, "negative_prompt": str}
-    """
-    if name not in TEMPLATES:
-        raise ValueError(f"Unknown template: {name}. Available: {list(TEMPLATES.keys())}")
-    
-    template = TEMPLATES[name]
-    return {
-        "prompt": template["base"].format(**variables),
-        "negative_prompt": template.get("negative", ""),
-    }
-```
-
----
-
-### 📄 `src/paperstream/prompts/term_mappings.json` ❌
-
-**Aufgabe:** Mapping von wissenschaftlichen Begriffen zu visuellen Beschreibungen
-
-```json
+Request Body:
 {
-    "_meta": {
-        "description": "Maps scientific terms to visual descriptors for SD prompts",
-        "version": "0.1.0"
-    },
-    "cell_types": {
-        "neuron": ["nerve cell", "neural cell", "brain cell"],
-        "erythrocyte": ["red blood cell", "RBC"],
-        "leukocyte": ["white blood cell", "WBC", "immune cell"]
-    },
-    "molecules": {
-        "DNA": ["double helix", "deoxyribonucleic acid"],
-        "ATP": ["adenosine triphosphate", "energy molecule"],
-        "glucose": ["blood sugar", "C6H12O6"]
-    },
-    "visual_styles": {
-        "textbook": ["educational", "labeled", "diagram"],
-        "research": ["detailed", "high resolution", "publication quality"],
-        "simplified": ["basic", "schematic", "overview"]
-    }
+  "paper_id": "PMC12345",
+  "title": "Randomized Trial of...",
+  "pdf_url": "https://...",
+  "priority": 7,
+  "source": "n8n"
+}
+
+Response:
+{
+  "status": "accepted",
+  "paper_id": "PMC12345",
+  "message": "Paper queued for processing"
 }
 ```
 
----
+**TODO:**
+- [ ] Endpoint erstellen in src/paperstream/handlers/paper_handler.py
+- [ ] PDF Download starten (async)
+- [ ] In SQLite speichern
+- [ ] Processing-Queue triggern
 
-## 📊 DATENFLUSS-ÜBERSICHT
 
+#### 2. n8n Webhook: Regel erstellen
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              MCP-PAPERSTREAM                                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  config.yaml                                                                 │
-│  ═══════════                                                                 │
-│  • Server-Einstellungen (Host, Port, Paths)                                 │
-│  • Model-Pfade (BioBERT, BiomedCLIP)                                        │
-│  • SD API URL                                                                │
-│  • IoT-Konfiguration                                                         │
-└───────────────────────────────┬─────────────────────────────────────────────┘
-                                │
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                 ▼
-┌─────────────────────┐ ┌───────────────┐ ┌─────────────────────┐
-│   biobert_handler   │ │  sd_api_client │ │  biomedclip_handler │
-│   ═══════════════   │ │  ═════════════ │ │  ════════════════   │
-│                     │ │                │ │                     │
-│ IN: Text            │ │ IN: Prompt     │ │ IN: Text + Image    │
-│     Layer-Range     │ │     Params     │ │                     │
-│                     │ │                │ │ OUT: Similarity     │
-│ OUT: Tokens         │ │ OUT: Image     │ │      Score (0-1)    │
-│      Token-IDs      │ │      Seed      │ │                     │
-│      Embeddings     │ │      Info      │ │ [NICHT IMPLEMENTIERT]│
-└──────────┬──────────┘ └───────┬───────┘ └─────────────────────┘
-           │                    │
-           └──────────┬─────────┘
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  server.py (MCP Server)                                                      │
-│  ══════════════════════                                                      │
-│                                                                              │
-│  TOOLS:                                                                      │
-│  • bertscore_compute(reference, candidate) → Job-ID + Score                 │
-│  • bertscore_status(job_id) → Status + Score                                │
-│  • register_iot_client(client_id, capability) → Registration                │
-│  • submit_task_result(task_id, embedding) → Accepted                        │
-│  • get_system_stats() → Client-Stats                                        │
-│                                                                              │
-│  ENDPOINTS:                                                                  │
-│  • GET /sse-bertscore?client_id=X → SSE Task Stream                         │
-│  • POST /bert-result → Task Result Submission                                │
-│  • GET /health → Health Check                                                │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  IoT Workers (externe Geräte)                                                │
-│  ════════════════════════════                                                │
-│                                                                              │
-│  • Verbinden via SSE                                                         │
-│  • Empfangen EmbeddingTasks                                                  │
-│  • Berechnen Teil-Embeddings                                                 │
-│  • Senden Ergebnis zurück                                                    │
-└─────────────────────────────────────────────────────────────────────────────┘
+POST /api/rules/create
+
+Request:
+{
+  "rule_id": "is_rct",
+  "question": "Ist das eine RCT?",
+  "positive_phrases": ["randomized controlled trial", "RCT"],
+  "negative_phrases": ["observational", "retrospective"],
+  "threshold": 0.75
+}
 ```
 
+**TODO:**
+- [ ] Endpoint in src/paperstream/handlers/rule_handler.py
+- [ ] BioBERT Embeddings generieren
+- [ ] In SQLite + Cache speichern
+
+
+#### 3. Android: Jobs abholen
+```
+GET /api/jobs/next?device_id=android_abc123&limit=5
+
+Response: Array von Jobs mit Voxel-Daten und Regel-Embeddings
+```
+
+**TODO:**
+- [ ] Job-Assignierung Logik (fair distribution)
+- [ ] Device-Tracking (last_seen updaten)
+- [ ] Komprimierung (gzip) für Embeddings
+
+
+#### 4. Android: Ergebnis submitten
+```
+POST /api/validation/submit
+
+Request:
+{
+  "device_id": "android_abc123",
+  "results": [
+    {
+      "job_id": "job_001",
+      "is_match": true,
+      "similarity": 0.89,
+      "points_earned": 89
+    }
+  ]
+}
+```
+
+**TODO:**
+- [ ] Ergebnisse in validation_results speichern
+- [ ] Consensus berechnen (wenn genug Votes)
+- [ ] Leaderboard updaten
+
+
+#### 5. Unity: Real-time Updates (SSE)
+```
+GET /api/stream/unity
+
+Server-Sent Events mit paper_validated, leaderboard_update
+```
+
 ---
 
-## ✅ PRIORITÄTEN-LISTE
+## 📋 TODO-Liste (Priorisiert)
 
-### Sofort (Blocking)
-1. [ ] `smythery.yaml` ← Inhalt aus `uv.lock` verschieben
-2. [ ] `uv.lock` neu generieren mit `uv lock`
-3. [ ] `config.yaml` ausfüllen
+### Phase 1: Database & Core API (Tag 1-2) ⚡
 
-### Hoch (Core Functionality)
-4. [ ] `biobert_handler.py` implementieren
-5. [ ] `server.py` anpassen: `_tokenize_simple()` → `biobert_handler.tokenize()`
-6. [ ] `download_model.py` refactoren (config.yaml nutzen)
+- [ ] SQLite Schema erstellen
+  - [ ] migrations/001_create_tables.sql schreiben
+  - [ ] Schema in database.py initialisieren
+  
+- [ ] Models definieren (db/models.py)
+  - [ ] Paper, PaperSection, Rule, ValidationJob models
+  
+- [ ] n8n Webhook Endpoints
+  - [ ] POST /api/papers/submit
+  - [ ] POST /api/rules/create
 
-### Mittel (Extended Features)
-7. [ ] `sd_api_client.py` implementieren
-8. [ ] `scientific_templates.py` implementieren
-9. [ ] `term_mappings.json` ausfüllen
 
-### Niedrig (Optional)
-10. [ ] `biomedclip_handler.py` implementieren
-11. [ ] Unit Tests hinzufügen
-12. [ ] Dokumentation (README.md) schreiben
+### Phase 2: BioBERT Rule Generator (Tag 2-3) 🧬
+
+- [ ] RuleGenerator Klasse (handlers/rule_handler.py)
+  - [ ] BioBERT Integration für Embeddings
+  - [ ] Positive/Negative Phrase Embedding
+  - [ ] Caching in SQLite
+  
+- [ ] Default Rules laden
+  - [ ] 6 Standard-Regeln beim Server-Start
+
+
+### Phase 3: Paper Processing Pipeline (Tag 3-5) 🔧
+
+- [ ] PDF Download (pipeline/paper_processor.py)
+  - [ ] Async download mit aiohttp
+  - [ ] Lokale Speicherung in /data/papers/
+  
+- [ ] PDF → PNG Rendering
+  - [ ] PyMuPDF Integration
+  - [ ] 512x512 Resolution
+  
+- [ ] Vision Encoder (pipeline/vision_encoder.py)
+  - [ ] BLIP-2 Q-Former ODER SigLIP
+  - [ ] GPU-Nutzung (RTX 3060)
+  
+- [ ] Text Extraction & Section Detection
+  - [ ] PyMuPDF text extraction
+  - [ ] Regex für Sections (Abstract, Methods, Results)
+  
+- [ ] Voxel Converter (pipeline/voxel_converter.py)
+  - [ ] Aus paperrun_game_logic.py portieren
+  - [ ] 768-dim → 8x8x12 Voxel Grid
+  - [ ] JSON Export für Unity
+
+
+### Phase 4: Job Distribution & Android API (Tag 5-6) 📱
+
+- [ ] Job Creation (handlers/job_handler.py)
+  - [ ] Pro Paper + Rule + Section = 1 Job
+  - [ ] Priority Queue
+  
+- [ ] Android Endpoints
+  - [ ] GET /api/jobs/next
+  - [ ] POST /api/validation/submit
+  - [ ] GET /api/rules/active
+  
+- [ ] Device Management (handlers/device_handler.py)
+  - [ ] Device Registration
+  - [ ] Performance Metrics
+
+
+### Phase 5: Consensus & VectorDB (Tag 6-7) 🎯
+
+- [ ] Consensus Engine (pipeline/consensus_engine.py)
+  - [ ] Ergebnisse aggregieren (3+ Devices)
+  - [ ] Mehrheitsentscheidung
+  - [ ] Agreement Ratio berechnen
+  
+- [ ] VectorDB Integration
+  - [ ] ChromaDB oder Qdrant
+  - [ ] Validierte Rules als Metadata
+
+
+### Phase 6: Unity SSE & Gamification (Tag 7-8) 🎮
+
+- [ ] SSE Endpoint (api/sse.py)
+  - [ ] /api/stream/unity für Live-Updates
+  - [ ] Events: paper_validated, leaderboard_update
+  
+- [ ] Leaderboard (game/leaderboard.py)
+  - [ ] Top 100 Players
+  - [ ] Achievements System
+
+
+### Phase 7: Testing & Optimization (Tag 8-10) ✅
+
+- [ ] Unit Tests
+  - [ ] Alle Handler testen
+  - [ ] Pipeline Tests mit Mock-Data
+  
+- [ ] Integration Tests
+  - [ ] End-to-End: n8n → SQLite → Android → Consensus
+  - [ ] Load Testing (1000 Papers/Tag)
+  
+- [ ] Performance Optimization
+  - [ ] Batch Processing
+  - [ ] GPU Memory Management
+
 
 ---
 
-## 🔗 NAMING-KONVENTIONEN
+## 🔧 Technische Details
 
-| Typ | Konvention | Beispiel |
-|-----|------------|----------|
-| Klassen | PascalCase | `BioBERTHandler`, `IoTClient` |
-| Funktionen | snake_case | `tokenize()`, `get_handler()` |
-| Konstanten | UPPER_SNAKE | `TINYBERT_LAYERS`, `EMBEDDING_DIM` |
-| Module | snake_case | `biobert_handler`, `sd_api_client` |
-| Config-Keys | snake_case | `model_path`, `api_url` |
+### Embedding Storage (BLOB)
 
-**Inkonsistenzen gefunden:**
-- `_tokenize_simple` in server.py → sollte `_tokenize` heißen oder Handler nutzen
+```python
+import numpy as np
 
+# Speichern
+embedding_bytes = np.array(embedding, dtype=np.float32).tobytes()
+
+# Laden
+embedding = np.frombuffer(row['embedding'], dtype=np.float32)
+```
+
+### Fair Job Distribution
+
+```python
+# Least-Recently-Assigned Device bekommt Job
+SELECT device_id 
+FROM device_registry 
+WHERE is_active = 1 
+ORDER BY last_assigned ASC 
+LIMIT 1
+```
+
+---
+
+## ⏱️ Zeitschätzung
+
+| Phase | Tage | Kritikalität |
+|-------|------|--------------|
+| Database & API | 2 | ⚡⚡⚡ |
+| BioBERT | 1 | ⚡⚡⚡ |
+| Paper Pipeline | 3 | ⚡⚡ |
+| Android API | 2 | ⚡⚡⚡ |
+| Consensus | 1 | ⚡⚡ |
+| Unity SSE | 1 | ⚡ |
+| Testing | 2 | ⚡⚡ |
+| **TOTAL** | **12 Tage** | |
+
+---
+
+## 🎯 Erfolgs-Kriterien
+
+- ✅ n8n kann Papers submitten → erscheinen in DB
+- ✅ Papers werden automatisch prozessiert (PDF → Voxel)
+- ✅ Android kann 5 Jobs abholen in < 1 Sekunde
+- ✅ Validation Results werden korrekt aggregiert
+- ✅ Consensus nach 3 Votes funktioniert
+- ✅ Unity bekommt Live-Updates via SSE
+- ✅ 1000 Papers/Tag verarbeitbar (RTX 3060)
