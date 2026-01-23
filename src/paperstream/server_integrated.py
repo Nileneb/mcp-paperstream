@@ -304,6 +304,24 @@ async def api_list_rules(request: Request) -> JSONResponse:
     rules = handler.list_rules()
     return JSONResponse({"rules": rules})
 
+async def api_get_active_rules(request: Request) -> JSONResponse:
+    """GET /api/rules/active - Unity endpoint for active rules"""
+    from .db import get_db
+    db = get_db()
+    rules = db.get_active_rules()
+    
+    # Format for Unity client
+    rules_data = []
+    for rule in rules:
+        rules_data.append({
+            "rule_id": rule.rule_id,
+            "question": rule.question,
+            "threshold": rule.threshold,
+            "is_active": rule.is_active
+        })
+    
+    return JSONResponse({"rules": rules_data, "count": len(rules_data)})
+
 async def api_get_jobs(request: Request) -> JSONResponse:
     """GET /api/jobs/next - Android endpoint"""
     device_id = request.query_params.get("device_id")
@@ -440,9 +458,10 @@ api_routes = [
     
     # Rules
     Route("/api/rules/create", api_create_rule, methods=["POST"]),
+    Route("/api/rules/active", api_get_active_rules, methods=["GET"]),  # Unity endpoint
     Route("/api/rules", api_list_rules, methods=["GET"]),
     
-    # Jobs (Android)
+    # Jobs (Android/Unity)
     Route("/api/jobs/next", api_get_jobs, methods=["GET"]),
     Route("/api/validation/submit", api_submit_validation, methods=["POST"]),
     
