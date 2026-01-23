@@ -76,31 +76,47 @@ mcp = FastMCP(
 @mcp.tool()
 async def submit_paper(
     paper_id: str,
-    title: Optional[str] = None,
-    pdf_url: Optional[str] = None,
-    priority: int = 5,
+    title: str = "",
+    pdf_url: str = "",
+    priority: str = "5",
     source: str = "mcp"
 ) -> Dict[str, Any]:
     """
-    Submit a new paper for processing.
+    Submit a new paper for processing and validation.
     
     Args:
-        paper_id: Unique identifier (e.g., PMC12345, DOI)
-        title: Paper title
-        pdf_url: URL to download PDF
-        priority: Processing priority (1-10)
-        source: Source of submission
+        paper_id: Unique identifier (e.g. "PMC12345", "10.1234/example.doi")
+        title: Paper title. Leave empty if unknown.
+        pdf_url: URL to download PDF. Leave empty if not available.
+        priority: Processing priority 1-10 as string (higher = more urgent, default "5")
+        source: Source of submission (e.g. "n8n", "manual", default "mcp")
     
     Returns:
-        Submission result
+        Submission result with status and paper_id
+    
+    Example:
+        submit_paper(
+            paper_id="PMC12345",
+            title="A Randomized Trial of Treatment X",
+            pdf_url="https://example.com/paper.pdf",
+            priority="8",
+            source="n8n"
+        )
     """
     from .api import get_paper_handler
     handler = get_paper_handler()
+    
+    # Parse priority from string
+    try:
+        priority_int = int(priority)
+    except (ValueError, TypeError):
+        priority_int = 5
+    
     return await handler.submit_paper(
         paper_id=paper_id,
-        title=title,
-        pdf_url=pdf_url,
-        priority=priority,
+        title=title if title else None,
+        pdf_url=pdf_url if pdf_url else None,
+        priority=priority_int,
         source=source
     )
 
@@ -108,31 +124,51 @@ async def submit_paper(
 async def create_rule(
     rule_id: str,
     question: str,
-    positive_phrases: list,
-    negative_phrases: Optional[list] = None,
-    threshold: float = 0.75
+    positive_phrases: str,
+    negative_phrases: str = "",
+    threshold: str = "0.75"
 ) -> Dict[str, Any]:
     """
     Create a validation rule with BioBERT embeddings.
     
     Args:
-        rule_id: Unique rule identifier
-        question: The validation question
-        positive_phrases: Phrases indicating positive match
-        negative_phrases: Phrases indicating negative match
-        threshold: Similarity threshold
+        rule_id: Unique rule identifier (e.g. "is_rct", "has_control_group")
+        question: The validation question (e.g. "Is this a randomized controlled trial?")
+        positive_phrases: Comma-separated phrases indicating positive match (e.g. "randomized controlled trial, RCT, clinical trial")
+        negative_phrases: Comma-separated phrases indicating negative match (e.g. "review, meta-analysis"). Optional.
+        threshold: Similarity threshold 0.0-1.0 as string (default "0.75")
     
     Returns:
-        Rule creation result
+        Rule creation result with embedding dimensions
+    
+    Example:
+        create_rule(
+            rule_id="is_rct",
+            question="Is this a randomized controlled trial?",
+            positive_phrases="randomized controlled trial, RCT, clinical trial, phase I, phase II",
+            negative_phrases="review article, meta-analysis, editorial",
+            threshold="0.7"
+        )
     """
     from .api import get_rule_handler
     handler = get_rule_handler()
+    
+    # Parse comma-separated strings into lists
+    pos_list = [p.strip() for p in positive_phrases.split(",") if p.strip()]
+    neg_list = [n.strip() for n in negative_phrases.split(",") if n.strip()] if negative_phrases else None
+    
+    # Parse threshold from string
+    try:
+        threshold_float = float(threshold)
+    except (ValueError, TypeError):
+        threshold_float = 0.75
+    
     return handler.create_rule(
         rule_id=rule_id,
         question=question,
-        positive_phrases=positive_phrases,
-        negative_phrases=negative_phrases,
-        threshold=threshold
+        positive_phrases=pos_list,
+        negative_phrases=neg_list,
+        threshold=threshold_float
     )
 
 @mcp.tool()
@@ -151,19 +187,25 @@ async def get_paper_status(paper_id: str) -> Dict[str, Any]:
     return engine.get_paper_validation_status(paper_id)
 
 @mcp.tool()
-async def get_leaderboard(limit: int = 10) -> Dict[str, Any]:
+async def get_leaderboard(limit: str = "10") -> Dict[str, Any]:
     """
     Get gamification leaderboard.
     
     Args:
-        limit: Number of top players to return
+        limit: Number of top players to return as string (default "10")
     
     Returns:
         Leaderboard entries
     """
     from .db import get_db
     db = get_db()
-    entries = db.get_leaderboard(limit)
+    
+    try:
+        limit_int = int(limit)
+    except (ValueError, TypeError):
+        limit_int = 10
+    
+    entries = db.get_leaderboard(limit_int)
     return {
         "leaderboard": [e.to_dict() for e in entries],
         "total_players": len(entries)

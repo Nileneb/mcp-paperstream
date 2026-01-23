@@ -73,7 +73,7 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install torch transformers fastmcp pyyaml httpx pillow python-dotenv aiohttp uvicorn starlette
+pip install torch transformers fastmcp pyyaml httpx pillow python-dotenv aiohttp uvicorn starlette requests
 
 # Optional: PDF processing
 pip install PyMuPDF
@@ -89,7 +89,7 @@ python -m src.paperstream.handlers.download_model all
 ./start_server.sh
 
 # Or manually:
-.venv/bin/python -m uvicorn src.paperstream.server_integrated:app --host 0.0.0.0 --port 8089
+python -m uvicorn src.paperstream.server_integrated:app --host 0.0.0.0 --port 8089
 
 # MCP-only mode (BERTScore IoT):
 ./start_server.sh mcp
@@ -101,18 +101,67 @@ python -m src.paperstream.handlers.download_model all
 # Health check
 curl http://localhost:8089/health
 
-# Submit paper (n8n webhook)
+# Submit paper (REST API)
 curl -X POST http://localhost:8089/api/papers/submit \
   -H "Content-Type: application/json" \
   -d '{"paper_id": "PMC12345", "title": "My Paper", "priority": 7}'
 
-# Create rule
-curl -X POST http://localhost:8089/api/rules/create \
-  -H "Content-Type: application/json" \
-  -d '{"rule_id": "is_rct", "question": "Is this a RCT?", "positive_phrases": ["randomized controlled trial"]}'
-
 # Get stats
 curl http://localhost:8089/api/stats
+```
+
+---
+
+## 🔌 n8n MCP Integration
+
+The server exposes MCP tools via **SSE Transport** for n8n integration.
+
+### n8n Configuration
+
+1. Add **MCP Client** node in n8n
+2. Set URL: `http://YOUR_IP:8089/sse`
+3. Transport: **SSE (Server-Sent Events)**
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `submit_paper` | Submit new paper for processing |
+| `create_rule` | Create validation rule with BioBERT embeddings |
+| `process_paper` | Process paper (extract sections, embeddings) |
+| `get_paper_status` | Get paper validation status |
+| `get_leaderboard` | Get gamification leaderboard |
+| `get_system_stats` | Get system statistics |
+| `load_default_rules` | Load default validation rules |
+
+### Example: Submit Paper via MCP
+
+```json
+{
+  "name": "submit_paper",
+  "arguments": {
+    "paper_id": "PMC12345",
+    "title": "My Scientific Paper",
+    "pdf_url": "https://example.com/paper.pdf",
+    "priority": 8,
+    "source": "n8n"
+  }
+}
+```
+
+### Example: Create Rule via MCP
+
+```json
+{
+  "name": "create_rule",
+  "arguments": {
+    "rule_id": "is_rct",
+    "question": "Is this a randomized controlled trial?",
+    "positive_phrases": ["randomized controlled trial", "RCT", "clinical trial"],
+    "negative_phrases": ["review", "meta-analysis"],
+    "threshold": 0.75
+  }
+}
 ```
 
 ---
@@ -155,7 +204,14 @@ src/paperstream/
 
 ## 🔌 API Endpoints
 
-### Papers (n8n Webhooks)
+### MCP (n8n Integration)
+| Endpoint | Description |
+|----------|-------------|
+| GET `/sse` | SSE stream for MCP client connection |
+| POST `/messages` | MCP message endpoint (JSON-RPC) |
+| Mount `/mcp` | Streamable HTTP for MCP Inspector |
+
+### Papers (REST API)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/papers/submit` | Submit new paper |

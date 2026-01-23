@@ -7,11 +7,19 @@ http://localhost:8089
 
 ## Endpoints Overview
 
+### MCP (n8n Integration)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/sse` | GET | SSE stream for MCP client |
+| `/messages` | POST | MCP JSON-RPC messages |
+| `/mcp` | * | Streamable HTTP endpoint |
+
+### REST API
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/api/stats` | GET | System statistics |
-| `/api/papers/submit` | POST | Submit new paper (n8n webhook) |
+| `/api/papers/submit` | POST | Submit new paper |
 | `/api/papers` | GET | List all papers |
 | `/api/papers/{paper_id}` | GET | Get paper details |
 | `/api/rules/create` | POST | Create validation rule |
@@ -22,7 +30,46 @@ http://localhost:8089
 | `/api/devices/{device_id}` | GET | Get device info |
 | `/api/consensus/{paper_id}` | GET | Get validation status |
 | `/api/stream/unity` | GET | SSE stream for Unity |
-| `/mcp` | * | MCP endpoint |
+
+---
+
+## MCP Integration (n8n)
+
+The server exposes MCP tools via **SSE Transport** at `/sse`.
+
+### Connection Flow
+1. Connect to `GET /sse` → Receive `session_id`
+2. Send JSON-RPC messages to `POST /messages?session_id=...`
+3. Receive responses via SSE stream
+
+### Available MCP Tools
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `submit_paper` | paper_id, title?, pdf_url?, priority?, source? | Submit paper |
+| `create_rule` | rule_id, question, positive_phrases, negative_phrases?, threshold? | Create rule |
+| `process_paper` | paper_id | Process paper sections |
+| `get_paper_status` | paper_id | Get validation status |
+| `get_leaderboard` | limit? | Get leaderboard |
+| `get_system_stats` | - | Get system stats |
+| `load_default_rules` | - | Load default rules |
+
+### Example: Tool Call
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "submit_paper",
+    "arguments": {
+      "paper_id": "PMC12345",
+      "title": "My Paper",
+      "priority": 8
+    }
+  }
+}
+```
 
 ---
 
