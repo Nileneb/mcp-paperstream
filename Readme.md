@@ -1,248 +1,250 @@
+# 🧬 MCP-PaperStream
 
-# 🎯 paperstreamReview Server-Side TODO
-## Ziel: MCP Server mit BioBERT + Stable Diffusion API Integration
+**Distributed MCP Server for Scientific Paper Review** combining BERTScore computation across IoT edge devices with Stable Diffusion integration for scientific visualizations.
 
 ---
 
-## 📊 ARCHITEKTUR-ÜBERSICHT
+## 📊 Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        MCP SERVER                                │
+│                     MCP SERVER (FastMCP 2.x)                    │
 │  ┌─────────────────┐   ┌──────────────────┐   ┌──────────────┐  │
 │  │  BioBERT/       │   │  Prompt Builder   │   │  SD API      │  │
-│  │  DistilBioBERT  │──▶│  (Term Expansion) │──▶│  Client      │  │
-│  │  (Text)         │   │                   │   │              │  │
+│  │  DistilBioBERT  │──▶│  (8 Templates)    │──▶│  Client      │  │
+│  │  Tokenizer      │   │                   │   │              │  │
 │  └─────────────────┘   └──────────────────┘   └──────┬───────┘  │
 │           │                                          │          │
 │           │            ┌─────────────────┐           │          │
 │           └───────────▶│  BiomedCLIP     │◀──────────┘          │
 │                        │  (Validation)    │                      │
 │                        └─────────────────┘                      │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │           Distributed BERTScore (IoT Workers)               ││
+│  │   ESP32 ──▶ Layer 0    RPi4 ──▶ Layer 0-2    Phone ──▶ 0-5  ││
+│  │   (LOW)                (MEDIUM)              (HIGH)          ││
+│  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│           AUTOMATIC1111 STABLE DIFFUSION WEBUI (WSL)            │
+│           AUTOMATIC1111 STABLE DIFFUSION WEBUI                  │
 │                    http://127.0.0.1:7860                         │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────┐    │
-│  │ /sdapi/v1/  │   │ /sdapi/v1/  │   │ Models: SD 1.5/2.1  │    │
-│  │ txt2img     │   │ img2img     │   │ + Science LoRAs     │    │
-│  └─────────────┘   └─────────────┘   └─────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## ✅ PHASE 1: Stable Diffusion Server Setup (WSL)
+## 🚀 Quick Start
 
-### 1.1 AUTOMATIC1111 Installation
-- [x] Repository klonen (bereits erledigt?)
-- [x] Python venv erstellen
-- [x] Dependencies installieren
-- [x] **API aktivieren**: `webui.sh --api --listen`
+### Prerequisites
+- Python 3.12
+- AUTOMATIC1111 Stable Diffusion WebUI running with `--api`
+- ~2GB disk space for models
 
-### 1.2 Modelle herunterladen (→ `models/Stable-diffusion/`)
-**Checkpoint-Modelle:**
+### Installation
+
 ```bash
-# Pfad: stable-diffusion-webui/models/Stable-diffusion/
+# Clone repository
+git clone https://github.com/Nileneb/mcp-paperstream.git
+cd mcp-paperstream
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install torch transformers fastmcp pyyaml httpx pillow python-dotenv
+
+# Optional: BiomedCLIP support
+pip install open_clip_torch
+
+# Download models (first run will auto-download from HuggingFace)
+python -m src.paperstream.handlers.download_model all
 ```
 
-### 1.3 API testen
+### Start Server
+
 ```bash
-# Teste ob API läuft >> läuft
-curl http://127.0.0.1:7860/sdapi/v1/sd-models
+# Make sure SD WebUI is running with --api flag first!
+./start_server.sh
+
+# Or manually:
+.venv/bin/uvicorn src.paperstream.server:mcp --host 0.0.0.0 --port 8089
 ```
 
 ---
 
-## ✅ PHASE 2: NLP-Modelle Download (HuggingFace)
+## 📁 Project Structure
 
-### 2.1 BioBERT Modelle (→ `./models/biobert/`)
-```bash
-# Erstelle Modell-Verzeichnis
-mkdir -p models/biobert models/biomedclip models/blip
 ```
-
-### 2.2 Download via Python
-```python
-from transformers import AutoTokenizer, AutoModel
-
-# Option A: Full BioBERT (440MB)
-tokenizer = AutoTokenizer.from_pretrained("dmis-lab/biobert-base-cased-v1.2")
-model = AutoModel.from_pretrained("dmis-lab/biobert-base-cased-v1.2")
-
-# Option B: DistilBioBERT (265MB) - EMPFOHLEN für Server
-tokenizer = AutoTokenizer.from_pretrained("nlpie/distil-biobert")
-model = AutoModel.from_pretrained("nlpie/distil-biobert")
-
-# Option C: TinyBioBERT (56MB) - Für IoT/Edge
-tokenizer = AutoTokenizer.from_pretrained("nlpie/tiny-biobert")
-model = AutoModel.from_pretrained("nlpie/tiny-biobert")
-```
-
----
-
-## ✅ PHASE 3: MCP Server Anpassung
-
-### 3.1 Neue Abhängigkeiten
-```bash
-pip install transformers torch open_clip_torch requests pillow
-```
-
-### 3.2 Server-Struktur
-```
-mcp_paperstream_server/
-├── __init__.py
-├── server.py              # Hauptserver (MCP-CLi/Uvicorn)
+src/paperstream/
+├── server.py              # MCP server - task distribution, SSE, job management
+├── config.yaml            # Central configuration
 ├── handlers/
-│   ├── __init__.py
-│   ├── biobert_handler.py # BioBERT Embeddings + Term Expansion
-│   ├── biomedclip_handler.py # Bildvalidierung
-│   ├── download_model.py # Download biobert to ../models
-│   └── sd_api_client.py   # AUTOMATIC1111 API Client
-├── models/
-├── prompts/
-│   ├── __init__.py
-│   ├── scientific_templates.py  # Prompt-Vorlagen
-│   └── term_mappings.json       # Bio-Term → Visual-Term
-└── config.yaml
+│   ├── biobert_handler.py    # BioBERT tokenization & embeddings
+│   ├── biomedclip_handler.py # Text-image similarity (optional)
+│   ├── sd_api_client.py      # AUTOMATIC1111 SD WebUI API client
+│   └── download_model.py     # Model download utility
+├── models/                # Local model cache
+│   ├── biobert/
+│   └── biomedclip/
+└── prompts/
+    ├── scientific_templates.py  # 8 SD prompt templates
+    └── term_mappings.json       # Scientific vocabulary mappings
 ```
-
-### 3.3 Kernfunktionen implementieren
-
-**A) BioBERT Handler:**
-- [ ] Biomedical Term Extraction
-- [ ] Semantic Similarity für Prompt-Refinement
-- [ ] Term Expansion (z.B. "mitosis" → ["cell division", "chromosomes", "spindle fibers"])
-
-**B) SD API Client:**
-- [ ] txt2img Wrapper
-- [ ] img2img Wrapper  
-- [ ] Parameter-Presets für wissenschaftliche Diagramme
-
-**C) BiomedCLIP Handler (optional):**
-- [ ] Generiertes Bild validieren
-- [ ] Text-Bild Alignment prüfen
 
 ---
 
-## ✅ PHASE 4: Integration & Testing
+## 🔧 Configuration
 
-### 4.1 End-to-End Flow testen
-```
-Input: "Generate diagram of CRISPR-Cas9 mechanism"
-   ↓
-BioBERT: Extract terms → ["CRISPR", "Cas9", "guide RNA", "DNA cleavage"]
-   ↓
-Prompt Builder: "scientific diagram, CRISPR-Cas9 mechanism, guide RNA 
-                 binding to DNA, Cas9 protein cleaving double helix, 
-                 molecular biology illustration, clean lines, labeled components"
-   ↓
-SD API: POST /sdapi/v1/txt2img
-   ↓
-(Optional) BiomedCLIP: Validate output
-   ↓
-Return: Generated image
+All settings in `src/paperstream/config.yaml`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8089
+  sse_path: "/sse-bertscore"
+
+models:
+  biobert:
+    model_name: "nlpie/distil-biobert"
+  biomedclip:
+    model_name: "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+stable_diffusion:
+  api_url: "http://127.0.0.1:7860"
+  timeout: 120
+
+iot:
+  assign_ttl: 30
+  tinybert_layers: 6
 ```
 
-### 4.2 Qualitätskriterien
-- [ ] Bildgenerierung < 30s
-- [ ] Relevanz-Score (BiomedCLIP) > 0.7
-- [ ] Keine anatomischen Fehler
+Environment variables override config:
+- `FASTMCP_HOST`, `FASTMCP_PORT`
+- `BERTSCORE_HMAC` (for task signing)
 
 ---
 
-## 📥 VALIDE DOWNLOAD-LINKS
+## 🛠️ MCP Tools
 
-### Stable Diffusion Checkpoints
+| Tool | Description |
+|------|-------------|
+| `bertscore_compute` | Compute BERTScore (distributed or local) |
+| `bertscore_status` | Check job status |
+| `register_iot_client` | Register IoT device as worker |
+| `submit_task_result` | Submit embedding result from worker |
+| `get_system_stats` | Get system statistics |
 
-| Modell | Link | Größe | Empfehlung |
-|--------|------|-------|------------|
-| **SD 1.5** | https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/v1-5-pruned-emaonly.safetensors | 4.27 GB | ✅ Standard |
-| **SD 2.1 Base** | https://huggingface.co/sd-research/stable-diffusion-2-1-base | 5 GB | Alternative |
+### Example: BERTScore Computation
 
-### BioBERT Familie (HuggingFace)
-
-| Modell | HuggingFace ID | Parameter | Empfehlung |
-|--------|----------------|-----------|------------|
-| **BioBERT Base v1.2** | `dmis-lab/biobert-base-cased-v1.2` | 110M | Full-Feature |
-| **BioBERT Base v1.1** | `dmis-lab/biobert-base-cased-v1.1` | 110M | Alternative |
-| **DistilBioBERT** ⭐ | `nlpie/distil-biobert` | 65M | ✅ EMPFOHLEN |
-| **TinyBioBERT** | `nlpie/tiny-biobert` | 15M | Edge/IoT |
-| **CompactBioBERT** | `nlpie/compact-biobert` | 65M | Balanced |
-
-### Vision-Language Modelle (Optional)
-
-| Modell | HuggingFace ID | Funktion |
-|--------|----------------|----------|
-| **BiomedCLIP** | `microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224` | Bild-Text Validierung |
-| **BLIP Image Captioning** | `Salesforce/blip-image-captioning-base` | Caption Generation |
-| **PubMedBERT** | `microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext` | Alternative zu BioBERT |
-
-### LoRAs für wissenschaftliche Bilder
-- Civitai durchsuchen nach: "scientific", "diagram", "medical illustration"
-- Pfad: `stable-diffusion-webui/models/Lora/`
+```python
+# Via MCP client
+result = await client.call_tool("bertscore_compute", {
+    "reference": "The mitochondria is the powerhouse of the cell.",
+    "candidate": "Mitochondria produce ATP through cellular respiration.",
+    "distributed": True
+})
+```
 
 ---
 
-## 📋 QUICK START COMMANDS
+## 🎨 Prompt Templates
+
+8 scientific visualization templates available:
+
+| Template | Use Case |
+|----------|----------|
+| `cell_diagram` | Cell structure diagrams |
+| `molecular_structure` | Molecular/chemical structures |
+| `anatomical` | Anatomical illustrations |
+| `process_flow` | Biological process flows |
+| `microscopy` | Microscopy-style images |
+| `protein_structure` | Protein/enzyme structures |
+| `pathway_diagram` | Metabolic/signaling pathways |
+| `tissue_section` | Histological sections |
+
+```python
+from src.paperstream.prompts import get_template
+
+prompt = get_template('cell_diagram', {
+    'cell_type': 'neuron',
+    'organelles': 'axon, dendrites, nucleus'
+})
+# Returns: {'prompt': '...', 'negative_prompt': '...', 'steps': 25, ...}
+```
+
+---
+
+## 📡 IoT Worker Integration
+
+### Device Capabilities
+
+| Capability | Devices | Assigned Layers |
+|------------|---------|-----------------|
+| `LOW` | ESP32, RPi Zero | Layer 0 only |
+| `MEDIUM` | RPi 4, old phones | Layers 0-2 |
+| `HIGH` | Modern phones, tablets | All 6 layers |
+
+### Register Worker
+
+```python
+result = await client.call_tool("register_iot_client", {
+    "client_id": "rpi4-kitchen",
+    "device_type": "raspberry_pi",
+    "capability": "medium"
+})
+```
+
+### SSE Task Stream
+
+Workers connect to `/sse-bertscore?client_id=<id>` to receive tasks.
+
+---
+
+## 🧪 Testing
 
 ```bash
-# 1. AUTOMATIC1111 starten (in WSL)
-cd stable-diffusion-webui
-./webui.sh --api --listen --xformers
+# Run all tests
+.venv/bin/python -c "
+from src.paperstream import mcp
+from src.paperstream.handlers import get_biobert_handler, get_sd_client
+from src.paperstream.prompts import TEMPLATES
 
-# 2. API Docs öffnen
-# http://127.0.0.1:7860/docs
+print(f'✅ MCP Server: {mcp.name}')
+print(f'✅ Templates: {len(TEMPLATES)}')
 
-# 3. Modelle downloaden (Python)
-python -c "
-from transformers import AutoTokenizer, AutoModel
-tokenizer = AutoTokenizer.from_pretrained('nlpie/distil-biobert')
-model = AutoModel.from_pretrained('nlpie/distil-biobert')
-model.save_pretrained('./models/distil-biobert')
-tokenizer.save_pretrained('./models/distil-biobert')
-print('DistilBioBERT heruntergeladen')
+handler = get_biobert_handler()
+tokens, ids = handler.tokenize('DNA replication')
+print(f'✅ BioBERT: {len(tokens)} tokens')
+
+client = get_sd_client()
+print(f'✅ SD Client: {client.api_url}')
 "
 ```
 
-### Test API Call (Python)
-```python
-import requests
-import base64
-from PIL import Image
-import io
+---
 
-url = "http://127.0.0.1:7860"
-payload = {
-    "prompt": "scientific diagram of DNA double helix structure, clean lines, labeled, educational illustration",
-    "negative_prompt": "blurry, text, watermark",
-    "steps": 20,
-    "width": 512,
-    "height": 512,
-    "sampler_name": "Euler"
-}
+## 📚 Models Used
 
-response = requests.post(url=f'{url}/sdapi/v1/txt2img', json=payload)
-r = response.json()
-
-# Decode image
-image_data = base64.b64decode(r['images'][0])
-image = Image.open(io.BytesIO(image_data))
-image.save('test_output.png')
-```
+| Model | HuggingFace ID | Size | Purpose |
+|-------|----------------|------|---------|
+| **DistilBioBERT** | `nlpie/distil-biobert` | 265MB | Tokenization & Embeddings |
+| **BiomedCLIP** | `microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224` | ~400MB | Image-Text Validation |
 
 ---
 
-## ⏰ PRIORITÄTS-REIHENFOLGE
+## 📄 License
 
-1. **JETZT**: SD WebUI mit `--api` starten, API testen
-2. **DANN**: DistilBioBERT herunterladen und lokal cachen
-3. **DANN**: SD API Client im MCP Server implementieren
-4. **DANN**: BioBERT-Prompt-Pipeline bauen
-5. **OPTIONAL**: BiomedCLIP für Validierung
+MIT License - see LICENSE file.
 
 ---
 
-Erstellt: 2026-01-23 11:08
+## 🔗 Links
+
+- [FastMCP Documentation](https://github.com/jlowin/fastmcp)
+- [AUTOMATIC1111 WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
+- [DistilBioBERT](https://huggingface.co/nlpie/distil-biobert)
+- [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224)

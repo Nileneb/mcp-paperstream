@@ -7,6 +7,7 @@
 3. **BiomedCLIP validation** for text-image semantic alignment
 
 ## Architecture Essentials
+WICHTIG!!!! PRÜFE IMMER OB DAS CONDA ENVIROMENT AKTIVIERT IST MIT NEM PYTHON 3.12 UND .VENV!!!!!!!
 CONDA ENVIROMENT: "paperstream"
 PYTHON VERSION: 3.12
 PYTHON ENV: ".venv"

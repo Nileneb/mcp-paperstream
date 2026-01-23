@@ -338,28 +338,123 @@ def _aggregate_embeddings(job: BERTScoreJob) -> Dict[str, Any]:
         "total_dim": len(combined)
     }
 
-def _calculate_bertscore(ref_embedding: List[float], cand_embedding: List[float]) -> Dict[str, Any]:
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Berechnet Cosine Similarity zwischen zwei Vektoren"""
+    import math
+    dot_product = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+
+def _calculate_bertscore_from_embeddings(
+    ref_embeddings: List[List[float]], 
+    cand_embeddings: List[List[float]]
+) -> Dict[str, Any]:
     """
-    Berechnet BERTScore aus aggregierten Embeddings
+    Berechnet ECHTEN BERTScore aus Token-Level Embeddings.
     
-    Formel: 
-    - Precision = max_i(cos_sim(cand_i, ref_*)) / |cand|
-    - Recall = max_j(cos_sim(ref_j, cand_*)) / |ref|
+    Formel (Zhang et al., 2019):
+    - Precision = (1/|cand|) * Σ max_j(cos_sim(cand_i, ref_j))
+    - Recall = (1/|ref|) * Σ max_i(cos_sim(ref_j, cand_i))  
     - F1 = 2 * P * R / (P + R)
-    """
-    # Placeholder - in Produktion echte Berechnung
-    # Hier simulieren wir einen Score
-    import random
     
-    precision = 0.7 + random.random() * 0.25
-    recall = 0.7 + random.random() * 0.25
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    Args:
+        ref_embeddings: Liste von Embedding-Vektoren für Reference-Tokens
+        cand_embeddings: Liste von Embedding-Vektoren für Candidate-Tokens
+    
+    Returns:
+        {"precision": float, "recall": float, "f1": float}
+    """
+    if not ref_embeddings or not cand_embeddings:
+        return {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "error": "Empty embeddings"
+        }
+    
+    # Precision: Für jeden Candidate-Token, finde max Similarity zu irgendeinem Reference-Token
+    precision_scores = []
+    for cand_emb in cand_embeddings:
+        max_sim = max(_cosine_similarity(cand_emb, ref_emb) for ref_emb in ref_embeddings)
+        precision_scores.append(max_sim)
+    precision = sum(precision_scores) / len(precision_scores) if precision_scores else 0.0
+    
+    # Recall: Für jeden Reference-Token, finde max Similarity zu irgendeinem Candidate-Token
+    recall_scores = []
+    for ref_emb in ref_embeddings:
+        max_sim = max(_cosine_similarity(ref_emb, cand_emb) for cand_emb in cand_embeddings)
+        recall_scores.append(max_sim)
+    recall = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
+    
+    # F1 Score
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     
     return {
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
-        "computed_locally": len(ref_embedding) == 0,  # Fallback wenn keine Embeddings
+    }
+
+
+def _compute_bertscore_real(reference: str, candidate: str) -> Dict[str, Any]:
+    """
+    Berechnet ECHTEN BERTScore mit BioBERT-Embeddings.
+    
+    Diese Funktion ersetzt den Placeholder und macht die eigentliche Arbeit.
+    """
+    handler = _get_biobert_handler()
+    
+    if handler is None:
+        return {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "error": "BioBERT handler not available",
+            "mode": "failed"
+        }
+    
+    # Tokenisiere beide Texte
+    ref_tokens, ref_ids = handler.tokenize(reference)
+    cand_tokens, cand_ids = handler.tokenize(candidate)
+    
+    # Berechne Token-Level Embeddings
+    ref_embeddings = handler.embed_tokens(ref_ids)
+    cand_embeddings = handler.embed_tokens(cand_ids)
+    
+    # Berechne BERTScore
+    scores = _calculate_bertscore_from_embeddings(ref_embeddings, cand_embeddings)
+    scores["mode"] = "local_biobert"
+    scores["ref_tokens"] = len(ref_tokens)
+    scores["cand_tokens"] = len(cand_tokens)
+    
+    return scores
+
+
+def _calculate_bertscore(ref_embedding: List[float], cand_embedding: List[float]) -> Dict[str, Any]:
+    """
+    Legacy-Funktion für Kompatibilität mit verteilter Berechnung.
+    Wird verwendet wenn Teil-Embeddings von IoT-Geräten aggregiert wurden.
+    """
+    if not ref_embedding or not cand_embedding:
+        return {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "computed_locally": True,
+        }
+    
+    # Einfache Cosine Similarity für aggregierte Embeddings
+    similarity = _cosine_similarity(ref_embedding, cand_embedding)
+    
+    return {
+        "precision": round(similarity, 4),
+        "recall": round(similarity, 4),
+        "f1": round(similarity, 4),
+        "computed_locally": False,
     }
 
 # =========================
@@ -375,7 +470,7 @@ async def bertscore_compute(
     Berechnet BERTScore für Reference vs. Candidate Text.
     
     Bei distributed=True wird die Berechnung auf IoT-Geräte verteilt.
-    Bei distributed=False läuft alles auf dem Coordinator.
+    Bei distributed=False oder wenn keine Worker verbunden sind, läuft alles lokal.
     
     Args:
         reference: Der Referenztext (z.B. Original-Paper-Abschnitt)
@@ -392,10 +487,6 @@ async def bertscore_compute(
     """
     job_id = f"job_{_now_ms()}"
     
-    # Tokenisiere beide Texte
-    ref_tokens = _tokenize_simple(reference)
-    cand_tokens = _tokenize_simple(candidate)
-    
     job = BERTScoreJob(
         job_id=job_id,
         reference_text=reference,
@@ -403,15 +494,16 @@ async def bertscore_compute(
     )
     jobs[job_id] = job
     
-    # Entscheide: verteilt oder lokal?
     num_clients = len(clients_queues)
     
+    # Wenn keine IoT-Worker oder distributed=False: Lokale Berechnung mit echtem BioBERT
     if not distributed or num_clients < MIN_CLIENTS_FOR_DISTRIBUTED:
-        # Fallback: Lokale Berechnung
+        # ECHTE Berechnung statt Placeholder!
+        job.final_score = _compute_bertscore_real(reference, candidate)
         job.status = "completed"
-        job.final_score = _calculate_bertscore([], [])
-        job.final_score["mode"] = "local_fallback"
-        job.final_score["reason"] = f"Only {num_clients} clients connected"
+        
+        if num_clients < MIN_CLIENTS_FOR_DISTRIBUTED:
+            job.final_score["reason"] = f"Only {num_clients} IoT clients connected, computed locally"
         
         return {
             "job_id": job_id,
@@ -421,6 +513,8 @@ async def bertscore_compute(
         }
     
     # Verteilte Berechnung
+    ref_tokens = _tokenize_simple(reference)
+    cand_tokens = _tokenize_simple(candidate)
     layer_chunks = _split_into_layer_chunks(num_clients)
     
     # Erstelle Tasks für Reference-Embeddings
@@ -679,6 +773,12 @@ async def sse_route(request: Request):
     return await sse_handler(request)
 
 # =========================
+# ASGI App für uvicorn
+# =========================
+# FastMCP 2.x braucht http_app() für uvicorn
+app = mcp.http_app()
+
+# =========================
 # Main
 # =========================
 if __name__ == "__main__":
@@ -687,4 +787,4 @@ if __name__ == "__main__":
     print(f"📡 SSE Endpoint: {SSE_PATH}")
     print(f"⏱️  Task TTL: {ASSIGN_TTL}s")
     print(f"📊 Max inflight per client: {MAX_INFLIGHT_PER_CLIENT}")
-    uvicorn.run(mcp, host=HOST, port=PORT)  # type: ignore[arg-type]
+    uvicorn.run(app, host=HOST, port=PORT)
