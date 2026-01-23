@@ -36,7 +36,7 @@ mcp = FastMCP(
 # Konfiguration
 # =========================
 HOST = os.getenv("FASTMCP_HOST", "0.0.0.0")
-PORT = int(os.getenv("FASTMCP_PORT", "8082"))
+PORT = int(os.getenv("FASTMCP_PORT", "8089"))
 SSE_PATH = os.getenv("SSE_PATH", "/sse-bertscore")
 RESULT_PATH = os.getenv("RESULT_PATH", "/bert-result")
 HEALTH_PATH = os.getenv("HEALTH_PATH", "/health")
