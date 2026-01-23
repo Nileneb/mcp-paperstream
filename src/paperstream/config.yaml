@@ -1,0 +1,25 @@
+server:
+  host: "0.0.0.0"
+  port: 8089
+  sse_path: "/sse-bertscore"
+  result_path: "/bert-result"
+  health_path: "/health"
+
+models:
+  biobert:
+    path: "./models/biobert/distil-biobert"
+    model_name: "nlpie/distil-biobert"
+  biomedclip:
+    path: "./models/biomedclip"
+    model_name: "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+stable_diffusion:
+  api_url: "http://127.0.0.1:7860"
+  timeout: 120
+
+iot:
+  assign_ttl: 30
+  max_inflight_per_client: 1
+  min_clients_for_distributed: 2
+  tinybert_layers: 6
+  embedding_dim: 312

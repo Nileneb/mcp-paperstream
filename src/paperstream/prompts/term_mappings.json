@@ -1,0 +1,354 @@
+{
+    "_meta": {
+        "description": "Maps scientific terms to visual descriptors for SD prompts",
+        "version": "0.1.0",
+        "usage": "Use get_visual_terms() to expand scientific terminology"
+    },
+    "cell_types": {
+        "neuron": {
+            "synonyms": [
+                "nerve cell",
+                "neural cell",
+                "brain cell"
+            ],
+            "visual_descriptors": [
+                "dendrites",
+                "axon",
+                "cell body",
+                "myelin sheath"
+            ],
+            "typical_stains": [
+                "Golgi stain",
+                "Nissl stain"
+            ]
+        },
+        "erythrocyte": {
+            "synonyms": [
+                "red blood cell",
+                "RBC"
+            ],
+            "visual_descriptors": [
+                "biconcave disc",
+                "no nucleus",
+                "hemoglobin-filled"
+            ],
+            "typical_stains": [
+                "Wright stain",
+                "Giemsa stain"
+            ]
+        },
+        "leukocyte": {
+            "synonyms": [
+                "white blood cell",
+                "WBC",
+                "immune cell"
+            ],
+            "visual_descriptors": [
+                "nucleus visible",
+                "granules",
+                "phagocytic"
+            ],
+            "typical_stains": [
+                "Wright stain",
+                "H&E"
+            ]
+        },
+        "hepatocyte": {
+            "synonyms": [
+                "liver cell"
+            ],
+            "visual_descriptors": [
+                "polygonal shape",
+                "central nucleus",
+                "glycogen granules"
+            ],
+            "typical_stains": [
+                "H&E",
+                "PAS stain"
+            ]
+        },
+        "cardiomyocyte": {
+            "synonyms": [
+                "cardiac muscle cell",
+                "heart muscle cell"
+            ],
+            "visual_descriptors": [
+                "striated",
+                "intercalated discs",
+                "branched"
+            ],
+            "typical_stains": [
+                "H&E",
+                "Masson trichrome"
+            ]
+        }
+    },
+    "molecules": {
+        "DNA": {
+            "synonyms": [
+                "deoxyribonucleic acid"
+            ],
+            "visual_descriptors": [
+                "double helix",
+                "base pairs",
+                "sugar-phosphate backbone"
+            ],
+            "colors": [
+                "blue adenine",
+                "red thymine",
+                "green guanine",
+                "yellow cytosine"
+            ]
+        },
+        "RNA": {
+            "synonyms": [
+                "ribonucleic acid"
+            ],
+            "visual_descriptors": [
+                "single strand",
+                "ribose sugar",
+                "uracil base"
+            ],
+            "colors": [
+                "similar to DNA with uracil replacing thymine"
+            ]
+        },
+        "ATP": {
+            "synonyms": [
+                "adenosine triphosphate",
+                "energy molecule"
+            ],
+            "visual_descriptors": [
+                "adenine base",
+                "ribose",
+                "three phosphate groups"
+            ],
+            "colors": [
+                "phosphate groups highlighted"
+            ]
+        },
+        "glucose": {
+            "synonyms": [
+                "blood sugar",
+                "dextrose"
+            ],
+            "visual_descriptors": [
+                "hexagonal ring",
+                "C6H12O6",
+                "hydroxyl groups"
+            ],
+            "colors": [
+                "carbon black",
+                "oxygen red",
+                "hydrogen white"
+            ]
+        },
+        "hemoglobin": {
+            "synonyms": [
+                "Hb",
+                "haemoglobin"
+            ],
+            "visual_descriptors": [
+                "four subunits",
+                "heme groups",
+                "iron centers"
+            ],
+            "colors": [
+                "red heme",
+                "protein ribbon colored by chain"
+            ]
+        }
+    },
+    "organs": {
+        "heart": {
+            "visual_descriptors": [
+                "four chambers",
+                "valves",
+                "coronary arteries"
+            ],
+            "cross_sections": [
+                "coronal",
+                "transverse",
+                "sagittal"
+            ]
+        },
+        "brain": {
+            "visual_descriptors": [
+                "cerebral cortex",
+                "gyri and sulci",
+                "white and gray matter"
+            ],
+            "cross_sections": [
+                "coronal",
+                "sagittal",
+                "axial"
+            ]
+        },
+        "liver": {
+            "visual_descriptors": [
+                "lobes",
+                "hepatic portal system",
+                "bile ducts"
+            ],
+            "cross_sections": [
+                "transverse",
+                "coronal"
+            ]
+        },
+        "kidney": {
+            "visual_descriptors": [
+                "cortex",
+                "medulla",
+                "nephrons",
+                "renal pelvis"
+            ],
+            "cross_sections": [
+                "coronal",
+                "transverse"
+            ]
+        },
+        "lung": {
+            "visual_descriptors": [
+                "alveoli",
+                "bronchi",
+                "pulmonary vessels"
+            ],
+            "cross_sections": [
+                "coronal",
+                "transverse"
+            ]
+        }
+    },
+    "processes": {
+        "mitosis": {
+            "stages": [
+                "prophase",
+                "metaphase",
+                "anaphase",
+                "telophase"
+            ],
+            "visual_elements": [
+                "spindle fibers",
+                "chromosomes",
+                "centrosomes"
+            ]
+        },
+        "meiosis": {
+            "stages": [
+                "meiosis I",
+                "meiosis II",
+                "crossing over"
+            ],
+            "visual_elements": [
+                "homologous pairs",
+                "chiasmata",
+                "haploid cells"
+            ]
+        },
+        "protein_synthesis": {
+            "stages": [
+                "transcription",
+                "translation"
+            ],
+            "visual_elements": [
+                "ribosome",
+                "mRNA",
+                "tRNA",
+                "amino acid chain"
+            ]
+        },
+        "cellular_respiration": {
+            "stages": [
+                "glycolysis",
+                "krebs cycle",
+                "electron transport chain"
+            ],
+            "visual_elements": [
+                "mitochondria",
+                "ATP synthase",
+                "electron carriers"
+            ]
+        },
+        "photosynthesis": {
+            "stages": [
+                "light reactions",
+                "calvin cycle"
+            ],
+            "visual_elements": [
+                "chloroplast",
+                "thylakoid",
+                "stroma"
+            ]
+        }
+    },
+    "visual_styles": {
+        "textbook": {
+            "descriptors": [
+                "educational",
+                "labeled",
+                "clear annotations",
+                "clean lines"
+            ],
+            "prompt_additions": "textbook illustration style, educational diagram"
+        },
+        "research": {
+            "descriptors": [
+                "detailed",
+                "high resolution",
+                "publication quality"
+            ],
+            "prompt_additions": "scientific journal quality, detailed rendering"
+        },
+        "simplified": {
+            "descriptors": [
+                "basic",
+                "schematic",
+                "overview",
+                "minimal detail"
+            ],
+            "prompt_additions": "simplified diagram, basic shapes, clear overview"
+        },
+        "3d_render": {
+            "descriptors": [
+                "three-dimensional",
+                "rendered",
+                "depth"
+            ],
+            "prompt_additions": "3D rendered, depth and shadows, volumetric"
+        }
+    },
+    "staining_methods": {
+        "H&E": {
+            "full_name": "Hematoxylin and Eosin",
+            "colors": [
+                "purple nuclei",
+                "pink cytoplasm"
+            ],
+            "use_case": "general tissue structure"
+        },
+        "Gram": {
+            "full_name": "Gram staining",
+            "colors": [
+                "purple gram-positive",
+                "pink gram-negative"
+            ],
+            "use_case": "bacterial classification"
+        },
+        "PAS": {
+            "full_name": "Periodic acid-Schiff",
+            "colors": [
+                "magenta glycogen and mucins"
+            ],
+            "use_case": "carbohydrate detection"
+        },
+        "Masson": {
+            "full_name": "Masson trichrome",
+            "colors": [
+                "blue collagen",
+                "red muscle",
+                "black nuclei"
+            ],
+            "use_case": "connective tissue"
+        }
+    }
+}

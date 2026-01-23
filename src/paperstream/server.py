@@ -15,6 +15,9 @@ from __future__ import annotations
 import os, json, time, asyncio, hmac, hashlib
 from typing import Any, Dict, List, Optional, Tuple, cast
 from enum import Enum
+from pathlib import Path
+
+import yaml
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -22,6 +25,28 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, StreamingResponse
 
 load_dotenv()
+
+# Lazy import für Handler (vermeidet Circular Imports)
+_biobert_handler = None
+
+def _get_biobert_handler():
+    """Lazy-load BioBERT Handler"""
+    global _biobert_handler
+    if _biobert_handler is None:
+        try:
+            from .handlers.biobert_handler import get_handler
+            _biobert_handler = get_handler()
+        except ImportError:
+            _biobert_handler = None
+    return _biobert_handler
+
+# Config laden
+def _load_config() -> dict:
+    config_path = Path(__file__).parent / "config.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
 
 # ========================= 
 # MCP Server Setup
@@ -121,10 +146,29 @@ def _hmac_sign(payload: str) -> str:
         return ""
     return hmac.new(HMAC_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
+def _tokenize(text: str) -> Tuple[List[str], List[int]]:
+    """
+    Tokenisiert Text mit BioBERT-Tokenizer.
+    
+    Falls BioBERT nicht verfügbar, Fallback auf einfache Tokenisierung.
+    
+    Returns:
+        (tokens, token_ids): Token-Liste und deren IDs
+    """
+    handler = _get_biobert_handler()
+    if handler is not None:
+        return handler.tokenize(text)
+    
+    # Fallback: einfache Tokenisierung (ohne echte IDs)
+    tokens = text.lower().split()
+    token_ids = list(range(len(tokens)))  # Pseudo-IDs
+    return tokens, token_ids
+
+
 def _tokenize_simple(text: str) -> List[str]:
-    """Einfache Tokenisierung (in Produktion: echten Tokenizer nutzen)"""
-    # Placeholder - in echt würde hier TinyBERT-Tokenizer laufen
-    return text.lower().split()
+    """Legacy-Funktion für Kompatibilität"""
+    tokens, _ = _tokenize(text)
+    return tokens
 
 def _get_best_client(task_type: TaskType, required_layers: Tuple[int, int]) -> Optional[str]:
     """
@@ -629,8 +673,10 @@ async def sse_handler(request: Request):
         }
     )
 
-# Route registrieren
-mcp.add_route(SSE_PATH, sse_handler, methods=["GET"])  # type: ignore[attr-defined]
+# Route registrieren (FastMCP 2.x verwendet custom_route_handler)
+@mcp.custom_route(SSE_PATH, methods=["GET"])
+async def sse_route(request: Request):
+    return await sse_handler(request)
 
 # =========================
 # Main
