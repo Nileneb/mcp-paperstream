@@ -60,11 +60,22 @@ mcp = FastMCP(
     
     Tools:
     - submit_paper: Submit paper for processing (n8n webhook)
+    - process_paper: Process a paper (extract sections, embeddings)
     - create_rule: Create validation rule with BioBERT embeddings
+    - load_default_rules: Load predefined validation rules
+    - create_jobs: Create validation jobs for papers (REQUIRED before devices can validate!)
+    - get_job_stats: Get job statistics
     - get_jobs: Get validation jobs for Android devices
     - submit_validation: Submit validation results
     - get_paper_status: Get paper validation status
     - get_leaderboard: Get gamification leaderboard
+    - get_system_stats: Get system statistics
+    
+    Workflow:
+    1. submit_paper -> download PDF
+    2. process_paper -> extract sections, generate embeddings  
+    3. create_jobs -> create validation jobs for sections × rules
+    4. Devices fetch jobs via get_jobs and submit results
     """,
     version="1.0.0",
 )
@@ -249,6 +260,119 @@ async def load_default_rules() -> Dict[str, Any]:
     from .api import get_rule_handler
     handler = get_rule_handler()
     return handler.load_default_rules()
+
+@mcp.tool()
+async def create_jobs(paper_id: str = "") -> Dict[str, Any]:
+    """
+    Create validation jobs for a paper or all ready papers.
+    
+    Jobs are created for each combination of paper sections × active rules.
+    These jobs are then distributed to Android/Unity devices for validation.
+    
+    Args:
+        paper_id: Paper ID to create jobs for. Leave empty to create jobs for ALL ready papers.
+    
+    Returns:
+        Job creation result with counts
+    
+    Example:
+        create_jobs(paper_id="PMC12345")  # Jobs for specific paper
+        create_jobs()  # Jobs for all ready papers without jobs
+    """
+    from .db import get_db
+    from .pipeline import get_paper_processor
+    
+    db = get_db()
+    processor = get_paper_processor()
+    
+    if paper_id:
+        # Create jobs for specific paper
+        paper = db.get_paper(paper_id)
+        if not paper:
+            return {"error": f"Paper not found: {paper_id}"}
+        if paper.status != "ready":
+            return {"error": f"Paper not ready (status: {paper.status}). Process it first."}
+        
+        result = processor._create_validation_jobs(paper_id)
+        return result
+    else:
+        # Create jobs for all ready papers that don't have jobs yet
+        papers = db.get_papers_by_status("ready", limit=1000)
+        
+        total_jobs = 0
+        papers_processed = 0
+        errors = []
+        
+        for paper in papers:
+            # Check if paper already has jobs
+            with db.get_connection() as conn:
+                existing = conn.execute(
+                    "SELECT COUNT(*) FROM validation_jobs WHERE paper_id = ?",
+                    (paper.paper_id,)
+                ).fetchone()[0]
+            
+            if existing == 0:
+                result = processor._create_validation_jobs(paper.paper_id)
+                if "error" not in result:
+                    total_jobs += result.get("jobs_created", 0)
+                    papers_processed += 1
+                else:
+                    errors.append({"paper_id": paper.paper_id, "error": result["error"]})
+        
+        return {
+            "papers_processed": papers_processed,
+            "total_jobs_created": total_jobs,
+            "errors": errors if errors else None
+        }
+
+@mcp.tool()
+async def get_job_stats() -> Dict[str, Any]:
+    """
+    Get validation job statistics.
+    
+    Returns:
+        Job counts by status, papers with/without jobs
+    """
+    from .db import get_db
+    db = get_db()
+    
+    with db.get_connection() as conn:
+        # Jobs by status
+        job_stats = {}
+        for status in ["pending", "assigned", "completed"]:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM validation_jobs WHERE status = ?",
+                (status,)
+            ).fetchone()[0]
+            job_stats[status] = count
+        
+        # Total jobs
+        job_stats["total"] = sum(job_stats.values())
+        
+        # Papers with jobs
+        papers_with_jobs = conn.execute(
+            "SELECT COUNT(DISTINCT paper_id) FROM validation_jobs"
+        ).fetchone()[0]
+        
+        # Ready papers without jobs
+        ready_papers = conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE status = 'ready'"
+        ).fetchone()[0]
+        
+        papers_without_jobs = conn.execute(
+            """
+            SELECT COUNT(*) FROM papers p 
+            WHERE p.status = 'ready' 
+            AND NOT EXISTS (SELECT 1 FROM validation_jobs j WHERE j.paper_id = p.paper_id)
+            """
+        ).fetchone()[0]
+    
+    return {
+        "jobs": job_stats,
+        "papers_with_jobs": papers_with_jobs,
+        "ready_papers": ready_papers,
+        "papers_without_jobs": papers_without_jobs
+    }
 
 # =========================
 # REST API Handlers

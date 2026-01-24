@@ -171,13 +171,18 @@ class PaperProcessor:
                     (paper_id,)
                 )
             
-            logger.info(f"Paper {paper_id} processed successfully")
+            # 5. Create validation jobs for this paper
+            jobs_result = self._create_validation_jobs(paper_id)
+            jobs_created = jobs_result.get("jobs_created", 0)
+            
+            logger.info(f"Paper {paper_id} processed successfully, {jobs_created} jobs created")
             
             return {
                 "paper_id": paper_id,
                 "status": "ready",
                 "sections_created": len(section_records),
                 "pages_rendered": len(image_paths),
+                "jobs_created": jobs_created,
                 "sections": [s.to_dict() for s in section_records]
             }
             
@@ -387,6 +392,58 @@ class PaperProcessor:
                     results["processed"] += 1
         
         return results
+    
+    def _create_validation_jobs(self, paper_id: str) -> Dict[str, Any]:
+        """
+        Create validation jobs for all sections × rules of a paper.
+        
+        Args:
+            paper_id: Paper ID to create jobs for
+        
+        Returns:
+            Dict with jobs_created count
+        """
+        import uuid
+        from ..db import ValidationJob
+        
+        # Get all sections for this paper
+        sections = self.db.get_sections_for_paper(paper_id)
+        if not sections:
+            logger.warning(f"No sections found for paper {paper_id}")
+            return {"jobs_created": 0, "error": "No sections found"}
+        
+        # Get all active rules
+        rules = self.db.get_active_rules()
+        if not rules:
+            logger.warning(f"No active rules found for creating jobs")
+            return {"jobs_created": 0, "error": "No active rules"}
+        
+        jobs_created = 0
+        
+        for section in sections:
+            for rule in rules:
+                job = ValidationJob(
+                    job_id=f"job_{uuid.uuid4().hex[:12]}",
+                    paper_id=paper_id,
+                    section_id=section.id,
+                    rule_id=rule.rule_id,
+                    status="pending"
+                )
+                
+                try:
+                    self.db.create_job(job)
+                    jobs_created += 1
+                except Exception as e:
+                    logger.warning(f"Failed to create job: {e}")
+        
+        logger.info(f"Created {jobs_created} validation jobs for paper {paper_id} ({len(sections)} sections × {len(rules)} rules)")
+        
+        return {
+            "jobs_created": jobs_created,
+            "paper_id": paper_id,
+            "sections": len(sections),
+            "rules": len(rules)
+        }
 
 
 # Singleton instance
