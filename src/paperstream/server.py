@@ -775,9 +775,9 @@ async def get_paper_thumbnail(
 async def get_paper_voxels(
     paper_id: str,
     page: int = 0,
-    grid_x: int = 16,
+    grid_x: int = 8,
     grid_y: int = 8,
-    grid_z: int = 16,
+    grid_z: int = 12,
     colored: bool = False
 ) -> Dict[str, Any]:
     """
@@ -786,12 +786,14 @@ async def get_paper_voxels(
     Konvertiert die PDF-Seite in ein 3D-Voxel-Grid basierend auf Text-Density.
     Dunkle Bereiche (Text) werden zu höheren Voxeln.
     
+    Standard Grid: 8x8x12 = 768 voxels (= BioBERT embedding dimension)
+    
     Args:
         paper_id: Paper ID
         page: Seitennummer (0-indexed)
-        grid_x: Grid-Breite (default: 16)
+        grid_x: Grid-Breite (default: 8)
         grid_y: Grid-Höhe/Layer (default: 8)
-        grid_z: Grid-Tiefe (default: 16)
+        grid_z: Grid-Tiefe (default: 12)
         colored: Ob RGB-Farbinformationen inkludiert werden sollen
     
     Returns:

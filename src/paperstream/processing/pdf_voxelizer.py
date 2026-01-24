@@ -5,10 +5,11 @@ PDF Voxelizer - KISS Version
 Converts PDF pages to 3D voxel grids for Unity mesh generation.
 Uses text density as height map.
 
-Grid: 16x8x16 (X, Y, Z)
-- X: horizontal position
-- Y: height (based on text density)
-- Z: vertical position (top to bottom of page)
+Grid: 8x8x12 (X, Y, Z) = 768 voxels
+- Matches BioBERT embedding dimension (768)
+- X: horizontal position (8 columns)
+- Y: height (8 layers based on text density)
+- Z: vertical position (12 rows, top to bottom)
 """
 
 import logging
@@ -30,10 +31,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Default grid dimensions
-GRID_X = 16  # Width
-GRID_Y = 8   # Height (max layers)
-GRID_Z = 16  # Depth
+# Default grid dimensions (8x8x12 = 768 voxels = BioBERT dim)
+GRID_X = 8   # Width (columns)
+GRID_Y = 8   # Height (layers)
+GRID_Z = 12  # Depth (rows)
 
 # Voxel types based on content
 VOXEL_EMPTY = 0
