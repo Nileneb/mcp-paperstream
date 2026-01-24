@@ -58,22 +58,32 @@ mcp = FastMCP(
     instructions="""
     PaperStream MCP Server - Scientific Paper Validation Platform
     
-    COMPLETE WORKFLOW (must follow this order!):
+    WORKFLOW OPTIONS:
     
+    === Option A: Direct PDF URL ===
     1. load_default_rules() - Load validation rules (once per session)
     2. submit_paper(paper_id, pdf_url, title) - Submit paper with PDF URL
     3. download_paper(paper_id) - Download the PDF file
     4. process_paper(paper_id) - Extract sections, generate embeddings, create jobs
-    5. get_job_stats() - Verify jobs were created
     
-    OR use batch processing:
+    === Option B: Use paper-search-mcp downloads (RECOMMENDED) ===
+    1. load_default_rules() - Load validation rules (once per session)
+    2. [paper-search-mcp] search_arxiv/biorxiv/pubmed(...) - Find papers
+    3. [paper-search-mcp] download_arxiv/biorxiv(...) - Download to shared volume
+    4. submit_paper(paper_id, title) - Submit paper (no URL needed)
+    5. link_paper_pdf(paper_id) - Link downloaded PDF from shared volume
+    6. process_paper(paper_id) - Extract sections, generate embeddings, create jobs
+    
+    === Option C: Batch processing ===
     1. load_default_rules()
     2. submit_paper(...) for each paper
     3. process_all_pending() - Downloads + processes ALL pending papers
     
     Available Tools:
-    - submit_paper: Submit paper for processing (requires pdf_url for full workflow)
-    - download_paper: Download PDF from submitted url (REQUIRED before process_paper)
+    - submit_paper: Submit paper for processing
+    - download_paper: Download PDF from submitted url
+    - link_paper_pdf: Link PDF from shared volume (from paper-search-mcp)
+    - list_shared_papers: List PDFs available in shared volume
     - process_paper: Extract sections, embeddings, create validation jobs
     - process_all_pending: Batch process all pending papers
     - create_rule: Create custom validation rule
@@ -84,9 +94,8 @@ mcp = FastMCP(
     - get_system_stats: Get system statistics
     - get_leaderboard: Get gamification leaderboard
     
-    IMPORTANT: Jobs are only created if:
-    1. Paper has been processed (sections exist)
-    2. Rules exist in database (load_default_rules first!)
+    SHARED VOLUME: PDFs downloaded via paper-search-mcp are stored in /shared/papers
+    and can be linked using link_paper_pdf().
     """,
     version="1.0.0",
 )
@@ -303,11 +312,94 @@ async def download_paper(paper_id: str) -> Dict[str, Any]:
         return {"error": f"Failed to download PDF for {paper_id}", "status": "failed"}
 
 @mcp.tool()
+async def link_paper_pdf(paper_id: str, filename: str = "") -> Dict[str, Any]:
+    """
+    Link an already downloaded PDF to a paper for processing.
+    
+    Use this when the PDF was downloaded via paper-search-mcp tools
+    (download_arxiv, download_biorxiv, etc.) and is in the shared volume.
+    
+    Args:
+        paper_id: Paper ID to link (must be submitted first via submit_paper)
+        filename: PDF filename (default: tries {paper_id}.pdf)
+    
+    Returns:
+        Link result with status and pdf_path
+    
+    Example workflow:
+        # 1. Search and download via paper-search-mcp
+        # download_arxiv("2106.12345") -> saves to /shared/papers/2106.12345.pdf
+        
+        # 2. Submit paper to paperstream
+        submit_paper(paper_id="2106.12345", title="My Paper")
+        
+        # 3. Link the already downloaded PDF
+        link_paper_pdf(paper_id="2106.12345")
+        # OR with explicit filename:
+        link_paper_pdf(paper_id="2106.12345", filename="2106.12345.pdf")
+        
+        # 4. Process the paper
+        process_paper(paper_id="2106.12345")
+    """
+    from .api import get_paper_handler
+    from .db import get_db
+    
+    db = get_db()
+    paper = db.get_paper(paper_id)
+    
+    if not paper:
+        return {"error": f"Paper not found: {paper_id}. Submit it first with submit_paper()", "status": "failed"}
+    
+    handler = get_paper_handler()
+    
+    # If no filename specified, try to find it
+    if not filename:
+        found_path = handler.find_paper_in_shared(paper_id)
+        if found_path:
+            filename = found_path.name
+        else:
+            filename = f"{paper_id}.pdf"
+    
+    return handler.link_downloaded_paper(paper_id, filename)
+
+@mcp.tool()
+async def list_shared_papers() -> Dict[str, Any]:
+    """
+    List all PDFs available in the shared papers directory.
+    
+    These are papers downloaded via paper-search-mcp that can be linked
+    to paperstream for processing.
+    
+    Returns:
+        Dict with list of available PDF files
+    """
+    import os
+    from pathlib import Path
+    
+    shared_dir = Path(os.getenv("SHARED_PAPERS_DIR", "/shared/papers"))
+    
+    if not shared_dir.exists():
+        return {
+            "status": "warning",
+            "message": f"Shared papers directory does not exist: {shared_dir}",
+            "files": []
+        }
+    
+    pdf_files = list(shared_dir.glob("*.pdf"))
+    
+    return {
+        "status": "ok",
+        "directory": str(shared_dir),
+        "count": len(pdf_files),
+        "files": [f.name for f in pdf_files]
+    }
+
+@mcp.tool()
 async def process_paper(paper_id: str) -> Dict[str, Any]:
     """
     Process a paper: extract sections, generate BioBERT embeddings, create voxels.
     
-    IMPORTANT: The PDF must be downloaded first! Call download_paper() before this.
+    IMPORTANT: The PDF must be downloaded first! Call download_paper() or link_paper_pdf() before this.
     
     This tool:
     1. Extracts text sections from the PDF (abstract, methods, results, etc.)

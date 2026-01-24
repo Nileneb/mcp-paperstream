@@ -39,9 +39,9 @@ RUN pip install --upgrade pip \
 COPY . .
 
 # Create necessary directories (models will be mounted as volume)
-RUN mkdir -p data/images data/papers
+RUN mkdir -p data/images data/papers src/paperstream/models/biobert/distil-biobert
 
-# Make start script executable
+# Make scripts executable
 RUN chmod +x start_server.sh
 
 # Expose HTTP port (default from config.yaml)
@@ -60,10 +60,8 @@ ENV PYTHONPATH=/app/src
 VOLUME ["/app/src/paperstream/models", "/app/data"]
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8089/health || exit 1
 
-# Default command runs integrated server
-# Use: docker run ... paperstream stdio - for stdio mode (MCP)
-CMD ["python", "-m", "uvicorn", "src.paperstream.server_integrated:app", \
-    "--host", "0.0.0.0", "--port", "8089"]
+# Start server (downloads BioBERT on first run if needed)
+CMD ["/app/start_server.sh", "integrated"]

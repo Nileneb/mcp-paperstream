@@ -9,6 +9,7 @@ Handles:
 
 import asyncio
 import logging
+import os
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,9 @@ import aiohttp
 from ..db import get_db, Paper
 
 logger = logging.getLogger(__name__)
+
+# Shared papers directory (from paper-search-mcp downloads)
+SHARED_PAPERS_DIR = Path(os.getenv("SHARED_PAPERS_DIR", "/shared/papers"))
 
 
 class PaperHandler:
@@ -114,6 +118,84 @@ class PaperHandler:
         paper = self.db.get_paper(paper_id)
         if paper:
             return paper.to_dict()
+        return None
+    
+    def link_downloaded_paper(self, paper_id: str, filename: str) -> Dict[str, Any]:
+        """
+        Link an already downloaded PDF (from paper-search-mcp) to a paper.
+        
+        This allows using PDFs downloaded via paper-search-mcp tools
+        (download_arxiv, download_biorxiv, etc.) with paperstream processing.
+        
+        Args:
+            paper_id: Paper ID to link
+            filename: PDF filename in the shared papers directory
+        
+        Returns:
+            Status dict with result
+        """
+        # Check shared directory first
+        shared_path = SHARED_PAPERS_DIR / filename
+        if shared_path.exists():
+            pdf_path = shared_path
+        else:
+            # Try local download directory
+            local_path = self.download_dir / filename
+            if local_path.exists():
+                pdf_path = local_path
+            else:
+                return {
+                    "status": "error",
+                    "paper_id": paper_id,
+                    "message": f"PDF not found: {filename}. Searched in {SHARED_PAPERS_DIR} and {self.download_dir}"
+                }
+        
+        # Update paper record
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE papers 
+                    SET pdf_local_path = ?, status = 'processing', 
+                        downloaded_at = CURRENT_TIMESTAMP
+                    WHERE paper_id = ?
+                    """,
+                    (str(pdf_path), paper_id)
+                )
+            
+            logger.info(f"Linked PDF for {paper_id}: {pdf_path}")
+            return {
+                "status": "linked",
+                "paper_id": paper_id,
+                "pdf_path": str(pdf_path)
+            }
+        except Exception as e:
+            logger.error(f"Failed to link PDF for {paper_id}: {e}")
+            return {
+                "status": "error",
+                "paper_id": paper_id,
+                "message": str(e)
+            }
+    
+    def find_paper_in_shared(self, paper_id: str) -> Optional[Path]:
+        """
+        Find a PDF for a paper_id in the shared directory.
+        
+        Tries common filename patterns:
+        - {paper_id}.pdf
+        - {paper_id} with / replaced by _
+        """
+        patterns = [
+            f"{paper_id}.pdf",
+            f"{paper_id.replace('/', '_')}.pdf",
+            f"{paper_id.replace(':', '_')}.pdf",
+        ]
+        
+        for pattern in patterns:
+            path = SHARED_PAPERS_DIR / pattern
+            if path.exists():
+                return path
+        
         return None
     
     def list_papers(

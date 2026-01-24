@@ -7,10 +7,10 @@ server:
 
 models:
   biobert:
-    path: "./models/biobert/distil-biobert"
+    path: "/app/src/paperstream/models/biobert/distil-biobert"
     model_name: "nlpie/distil-biobert"
   biomedclip:
-    path: "./models/biomedclip"
+    path: "/app/src/paperstream/models/biomedclip"
     model_name: "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
 stable_diffusion:

@@ -23,16 +23,21 @@ echo -e "${GREEN}║           PaperStream MCP Server v1.0.0                  �
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check .venv exists
-if [ ! -d ".venv" ]; then
-    echo -e "${RED}❌ Virtual environment not found!${NC}"
-    echo "   Run: python -m venv .venv && .venv/bin/pip install -e ."
-    exit 1
+# Check if running in Docker
+if [ -d "/app/src" ]; then
+    IS_DOCKER=true
+    echo -e "${BLUE}Environment: Docker${NC}"
+else
+    IS_DOCKER=false
+    # Check .venv exists
+    if [ ! -d ".venv" ]; then
+        echo -e "${RED}❌ Virtual environment not found!${NC}"
+        echo "   Run: python -m venv .venv && .venv/bin/pip install -e ."
+        exit 1
+    fi
+    PYTHON_VERSION=$(.venv/bin/python --version 2>&1 | cut -d' ' -f2)
+    echo -e "${BLUE}Python:${NC} $PYTHON_VERSION"
 fi
-
-# Check Python version
-PYTHON_VERSION=$(.venv/bin/python --version 2>&1 | cut -d' ' -f2)
-echo -e "${BLUE}Python:${NC} $PYTHON_VERSION"
 
 # Check if SD API is reachable (optional)
 SD_URL="${SD_API_URL:-http://127.0.0.1:7860}"
@@ -80,8 +85,16 @@ echo -e "${GREEN}Starting server...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Start server with uvicorn
-exec .venv/bin/python -m uvicorn "$SERVER_MODULE" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --reload \
-    --reload-dir src
+if [ "$IS_DOCKER" = true ]; then
+    # Docker: use system python, no reload
+    exec python -m uvicorn "$SERVER_MODULE" \
+        --host "$HOST" \
+        --port "$PORT"
+else
+    # Local: use venv, with reload for development
+    exec .venv/bin/python -m uvicorn "$SERVER_MODULE" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --reload \
+        --reload-dir src
+fi

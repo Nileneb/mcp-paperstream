@@ -67,6 +67,18 @@ class ExtractedSection:
     end_y: float = 0.0
 
 
+def sanitize_paper_id(paper_id: str) -> str:
+    """
+    Sanitize paper ID for use in file paths.
+    Replaces characters that are problematic in file systems.
+    """
+    # Replace common problematic characters
+    sanitized = paper_id.replace('/', '_').replace(':', '_').replace('\\', '_')
+    sanitized = sanitized.replace('<', '_').replace('>', '_').replace('"', '_')
+    sanitized = sanitized.replace('|', '_').replace('?', '_').replace('*', '_')
+    return sanitized
+
+
 class PaperProcessor:
     """
     Processes scientific papers from PDF to Unity-ready voxels.
@@ -301,8 +313,9 @@ class PaperProcessor:
         doc = fitz.open(str(pdf_path))
         image_paths = []
         
-        # Create paper-specific image directory
-        paper_img_dir = self.images_dir / paper_id
+        # Create paper-specific image directory (sanitize paper_id for filesystem)
+        safe_paper_id = sanitize_paper_id(paper_id)
+        paper_img_dir = self.images_dir / safe_paper_id
         paper_img_dir.mkdir(exist_ok=True)
         
         for page_num, page in enumerate(doc, 1):
