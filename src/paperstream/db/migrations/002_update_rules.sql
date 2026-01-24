@@ -4,7 +4,9 @@
 
 -- Add new columns for semantic matching
 ALTER TABLE rules ADD COLUMN positive_phrases TEXT DEFAULT '[]';
+
 ALTER TABLE rules ADD COLUMN negative_phrases TEXT DEFAULT '[]';
+
 ALTER TABLE rules ADD COLUMN threshold REAL DEFAULT 0.65;
 
 -- Update existing rules to have default threshold

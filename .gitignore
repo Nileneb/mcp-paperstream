@@ -21,3 +21,4 @@ paperstream.db
 data/
 .data/
 /data
+.sql
