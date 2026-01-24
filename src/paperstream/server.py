@@ -726,6 +726,50 @@ async def get_system_stats() -> Dict[str, Any]:
         "jobs_total": len(jobs),
     }
 
+
+@mcp.tool(tags={"public"})
+async def get_paper_thumbnail(
+    paper_id: str,
+    width: int = 200,
+    height: int = 280,
+    regenerate: bool = False
+) -> Dict[str, Any]:
+    """
+    Generiert oder liefert ein Thumbnail (PNG) der ersten PDF-Seite.
+    
+    Für Unity-Integration: Gibt Base64-encoded PNG zurück.
+    Thumbnails werden gecacht für schnellere Abfragen.
+    
+    Args:
+        paper_id: Paper ID (z.B. DOI oder PMC-ID)
+        width: Thumbnail-Breite in Pixel (default: 200)
+        height: Thumbnail-Höhe in Pixel (default: 280)
+        regenerate: True um Cache zu ignorieren und neu zu generieren
+    
+    Returns:
+        {
+            "status": "success" | "error" | "no_pdf",
+            "paper_id": str,
+            "thumbnail_base64": str (PNG als Base64),
+            "thumbnail_path": str (Dateipfad),
+            "width": int,
+            "height": int,
+            "cached": bool
+        }
+    """
+    from .api.paper_handler import get_paper_handler
+    handler = get_paper_handler()
+    
+    result = handler.get_thumbnail(
+        paper_id=paper_id,
+        width=width,
+        height=height,
+        as_base64=True,
+        regenerate=regenerate
+    )
+    
+    return result
+
 # =========================
 # SSE Endpoint für IoT-Clients
 # =========================

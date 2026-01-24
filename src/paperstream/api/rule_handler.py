@@ -14,114 +14,9 @@ import numpy as np
 
 from ..db import get_db, Rule
 from ..handlers import get_biobert_handler
+from ..rules import ENHANCED_RULES
 
 logger = logging.getLogger(__name__)
-
-
-# Default rules for paper validation
-DEFAULT_RULES = [
-    {
-        "rule_id": "is_rct",
-        "question": "Is this a Randomized Controlled Trial (RCT)?",
-        "positive_phrases": [
-            "randomized controlled trial",
-            "RCT",
-            "randomized clinical trial",
-            "randomized study",
-            "randomly assigned",
-            "random allocation"
-        ],
-        "negative_phrases": [
-            "observational study",
-            "retrospective",
-            "case report",
-            "review article",
-            "meta-analysis"
-        ],
-        "threshold": 0.75
-    },
-    {
-        "rule_id": "has_placebo",
-        "question": "Does the study use a placebo control?",
-        "positive_phrases": [
-            "placebo-controlled",
-            "placebo group",
-            "placebo arm",
-            "sham treatment",
-            "inactive control"
-        ],
-        "negative_phrases": [
-            "no placebo",
-            "active comparator only",
-            "open-label"
-        ],
-        "threshold": 0.70
-    },
-    {
-        "rule_id": "is_blinded",
-        "question": "Is the study blinded?",
-        "positive_phrases": [
-            "double-blind",
-            "single-blind",
-            "triple-blind",
-            "blinded assessment",
-            "masked study"
-        ],
-        "negative_phrases": [
-            "open-label",
-            "unblinded",
-            "no blinding"
-        ],
-        "threshold": 0.70
-    },
-    {
-        "rule_id": "reports_primary_outcome",
-        "question": "Does the study report a primary outcome?",
-        "positive_phrases": [
-            "primary outcome",
-            "primary endpoint",
-            "primary efficacy",
-            "main outcome measure"
-        ],
-        "negative_phrases": [
-            "no primary outcome defined",
-            "exploratory analysis only"
-        ],
-        "threshold": 0.65
-    },
-    {
-        "rule_id": "sample_size_adequate",
-        "question": "Does the study have adequate sample size (N > 50)?",
-        "positive_phrases": [
-            "patients enrolled",
-            "participants included",
-            "sample size calculation",
-            "power analysis"
-        ],
-        "negative_phrases": [
-            "pilot study",
-            "small sample",
-            "preliminary results"
-        ],
-        "threshold": 0.60
-    },
-    {
-        "rule_id": "has_statistical_analysis",
-        "question": "Does the study include proper statistical analysis?",
-        "positive_phrases": [
-            "statistical analysis",
-            "p-value",
-            "confidence interval",
-            "intention-to-treat",
-            "per-protocol analysis"
-        ],
-        "negative_phrases": [
-            "descriptive only",
-            "no statistical tests"
-        ],
-        "threshold": 0.65
-    }
-]
 
 
 class RuleHandler:
@@ -307,22 +202,23 @@ class RuleHandler:
     
     def load_default_rules(self) -> Dict[str, Any]:
         """
-        Load default validation rules into database.
+        Load enhanced validation rules into database.
         
+        Uses ENHANCED_RULES with semantically rich phrases for BioBERT matching.
         Called on server startup to ensure base rules exist.
         """
         created = 0
         skipped = 0
         errors = []
         
-        for rule_def in DEFAULT_RULES:
+        for rule_id, rule_def in ENHANCED_RULES.items():
             result = self.create_rule(
-                rule_id=rule_def["rule_id"],
+                rule_id=rule_id,
                 question=rule_def["question"],
                 positive_phrases=rule_def["positive_phrases"],
                 negative_phrases=rule_def.get("negative_phrases"),
-                threshold=rule_def.get("threshold", 0.75),
-                created_by="system_default"
+                threshold=rule_def.get("threshold", 0.65),
+                created_by="system_enhanced"
             )
             
             if result["status"] == "created":
@@ -332,12 +228,12 @@ class RuleHandler:
             else:
                 errors.append(result)
         
-        logger.info(f"Default rules: {created} created, {skipped} skipped")
+        logger.info(f"Enhanced rules: {created} created, {skipped} skipped, total={len(ENHANCED_RULES)}")
         
         return {
             "created": created,
             "skipped": skipped,
-            "total": len(DEFAULT_RULES),
+            "total": len(ENHANCED_RULES),
             "errors": errors
         }
     

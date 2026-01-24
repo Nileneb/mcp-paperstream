@@ -5,6 +5,7 @@ Handles:
 - POST /api/papers/submit - Submit new paper (n8n webhook)
 - GET /api/papers/{paper_id} - Get paper details
 - GET /api/papers - List papers
+- GET /api/papers/{paper_id}/thumbnail - Get paper thumbnail
 """
 
 import asyncio
@@ -16,6 +17,7 @@ from pathlib import Path
 import aiohttp
 
 from ..db import get_db, Paper
+from ..processing import generate_thumbnail, ThumbnailGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +32,15 @@ class PaperHandler:
         self.db = get_db()
         self.download_dir = Path(__file__).parent.parent.parent.parent / "data" / "papers"
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.thumbnail_dir = Path(__file__).parent.parent.parent.parent / "data" / "images"
+        self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self._download_queue: asyncio.Queue = asyncio.Queue()
         self._processing = False
+        self._thumbnail_gen = ThumbnailGenerator(
+            width=200,
+            height=280,
+            cache_dir=self.thumbnail_dir
+        )
     
     async def submit_paper(
         self,
@@ -218,6 +227,157 @@ class PaperHandler:
         """Get all sections for a paper"""
         sections = self.db.get_sections_for_paper(paper_id)
         return [s.to_dict() for s in sections]
+    
+    def get_thumbnail(
+        self,
+        paper_id: str,
+        width: int = 200,
+        height: int = 280,
+        as_base64: bool = True,
+        regenerate: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get thumbnail for a paper's PDF.
+        
+        Generates from first page if not cached.
+        For Unity: returns base64 encoded PNG.
+        
+        Args:
+            paper_id: Paper identifier
+            width: Thumbnail width in pixels
+            height: Thumbnail height in pixels
+            as_base64: Return as base64 string (default for Unity)
+            regenerate: Force regeneration even if cached
+        
+        Returns:
+            {
+                "status": "success" | "error" | "no_pdf",
+                "paper_id": str,
+                "thumbnail_base64": str (if as_base64),
+                "thumbnail_path": str (if saved to disk),
+                "width": int,
+                "height": int
+            }
+        """
+        paper = self.db.get_paper(paper_id)
+        if not paper:
+            return {
+                "status": "error",
+                "paper_id": paper_id,
+                "message": "Paper not found"
+            }
+        
+        # Check if PDF exists
+        pdf_path = None
+        if paper.pdf_local_path and Path(paper.pdf_local_path).exists():
+            pdf_path = Path(paper.pdf_local_path)
+        else:
+            # Try to find in shared directory
+            pdf_path = self.find_paper_in_shared(paper_id)
+        
+        if not pdf_path:
+            return {
+                "status": "no_pdf",
+                "paper_id": paper_id,
+                "message": "No PDF available for this paper"
+            }
+        
+        # Generate safe filename from paper_id
+        safe_id = paper_id.replace("/", "_").replace(":", "_").replace("\\", "_")
+        thumb_filename = f"{safe_id}_thumb.png"
+        thumb_path = self.thumbnail_dir / thumb_filename
+        
+        # Check cache unless regenerate requested
+        if not regenerate and thumb_path.exists():
+            logger.debug(f"Using cached thumbnail for {paper_id}")
+            if as_base64:
+                import base64
+                thumb_base64 = base64.b64encode(thumb_path.read_bytes()).decode("utf-8")
+                return {
+                    "status": "success",
+                    "paper_id": paper_id,
+                    "thumbnail_base64": thumb_base64,
+                    "thumbnail_path": str(thumb_path),
+                    "width": width,
+                    "height": height,
+                    "cached": True
+                }
+            else:
+                return {
+                    "status": "success",
+                    "paper_id": paper_id,
+                    "thumbnail_path": str(thumb_path),
+                    "width": width,
+                    "height": height,
+                    "cached": True
+                }
+        
+        # Generate new thumbnail
+        try:
+            if width != 200 or height != 280:
+                # Use custom size
+                gen = ThumbnailGenerator(width=width, height=height, cache_dir=self.thumbnail_dir)
+            else:
+                gen = self._thumbnail_gen
+            
+            saved_path = gen.generate_and_save(
+                pdf_path=pdf_path,
+                output_path=thumb_path,
+                page_num=0,
+                output_format="png"
+            )
+            
+            if saved_path:
+                # Update database with thumbnail path
+                try:
+                    with self.db.get_connection() as conn:
+                        conn.execute(
+                            """
+                            UPDATE papers 
+                            SET thumbnail_path = ?, thumbnail_generated_at = CURRENT_TIMESTAMP
+                            WHERE paper_id = ?
+                            """,
+                            (str(saved_path), paper_id)
+                        )
+                except Exception as e:
+                    # Table might not have column yet - non-critical
+                    logger.debug(f"Could not update thumbnail_path in DB: {e}")
+                
+                if as_base64:
+                    import base64
+                    thumb_base64 = base64.b64encode(saved_path.read_bytes()).decode("utf-8")
+                    return {
+                        "status": "success",
+                        "paper_id": paper_id,
+                        "thumbnail_base64": thumb_base64,
+                        "thumbnail_path": str(saved_path),
+                        "width": width,
+                        "height": height,
+                        "cached": False
+                    }
+                else:
+                    return {
+                        "status": "success",
+                        "paper_id": paper_id,
+                        "thumbnail_path": str(saved_path),
+                        "width": width,
+                        "height": height,
+                        "cached": False
+                    }
+            else:
+                return {
+                    "status": "error",
+                    "paper_id": paper_id,
+                    "message": "Thumbnail generation failed"
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to generate thumbnail for {paper_id}: {e}")
+            return {
+                "status": "error",
+                "paper_id": paper_id,
+                "message": str(e)
+            }
     
     async def download_pdf(self, paper_id: str) -> bool:
         """
