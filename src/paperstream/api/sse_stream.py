@@ -142,15 +142,27 @@ class UnitySSEStream:
         self,
         paper_id: str,
         title: str,
-        rules_results: Dict[str, bool]
+        rules_results: Dict[str, bool],
+        voxel_data: Optional[Dict[str, Any]] = None,
+        thumbnail_base64: Optional[str] = None
     ):
         """Emit when paper validation is complete"""
-        await self.broadcast("paper_validated", {
+        payload = {
             "paper_id": paper_id,
             "title": title,
             "rules_results": rules_results,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        
+        # Include voxel data for Unity mesh generation
+        if voxel_data:
+            payload["voxel_data"] = voxel_data
+        
+        # Include thumbnail for Unity UI
+        if thumbnail_base64:
+            payload["thumbnail_base64"] = thumbnail_base64
+        
+        await self.broadcast("paper_validated", payload)
     
     async def emit_leaderboard_update(
         self,

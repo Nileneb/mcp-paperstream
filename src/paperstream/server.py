@@ -770,6 +770,82 @@ async def get_paper_thumbnail(
     
     return result
 
+
+@mcp.tool(tags={"public"})
+async def get_paper_voxels(
+    paper_id: str,
+    page: int = 0,
+    grid_x: int = 16,
+    grid_y: int = 8,
+    grid_z: int = 16,
+    colored: bool = False
+) -> Dict[str, Any]:
+    """
+    Generiert Voxel-Daten aus einer PDF-Seite für Unity 3D-Mesh.
+    
+    Konvertiert die PDF-Seite in ein 3D-Voxel-Grid basierend auf Text-Density.
+    Dunkle Bereiche (Text) werden zu höheren Voxeln.
+    
+    Args:
+        paper_id: Paper ID
+        page: Seitennummer (0-indexed)
+        grid_x: Grid-Breite (default: 16)
+        grid_y: Grid-Höhe/Layer (default: 8)
+        grid_z: Grid-Tiefe (default: 16)
+        colored: Ob RGB-Farbinformationen inkludiert werden sollen
+    
+    Returns:
+        {
+            "status": "success" | "error" | "no_pdf",
+            "paper_id": str,
+            "grid_size": [X, Y, Z],
+            "voxels": [[x, y, z, density], ...] oder [[x, y, z, density, r, g, b], ...],
+            "stats": {"total": int, "fill_ratio": float}
+        }
+    """
+    from .api.paper_handler import get_paper_handler
+    from .processing import pdf_to_voxel_grid, pdf_to_voxel_grid_colored
+    from pathlib import Path
+    
+    handler = get_paper_handler()
+    paper = handler.db.get_paper(paper_id)
+    
+    if not paper:
+        return {
+            "status": "error",
+            "paper_id": paper_id,
+            "message": "Paper not found"
+        }
+    
+    # Find PDF path
+    pdf_path = None
+    if paper.pdf_local_path and Path(paper.pdf_local_path).exists():
+        pdf_path = Path(paper.pdf_local_path)
+    else:
+        pdf_path = handler.find_paper_in_shared(paper_id)
+    
+    if not pdf_path:
+        return {
+            "status": "no_pdf",
+            "paper_id": paper_id,
+            "message": "No PDF available for this paper"
+        }
+    
+    # Generate voxels
+    grid_size = (grid_x, grid_y, grid_z)
+    
+    if colored:
+        result = pdf_to_voxel_grid_colored(pdf_path, page, grid_size)
+    else:
+        result = pdf_to_voxel_grid(pdf_path, page, grid_size)
+    
+    return {
+        "status": "success",
+        "paper_id": paper_id,
+        **result
+    }
+
+
 # =========================
 # SSE Endpoint für IoT-Clients
 # =========================
