@@ -338,16 +338,17 @@ class PaperProcessor:
     def _embedding_to_voxels(
         self,
         embedding: List[float],
-        grid_size: Tuple[int, int, int] = (8, 8, 12)
+        grid_size: Tuple[int, int, int] = (16, 8, 16)
     ) -> List[List[List[float]]]:
         """
-        Convert 768-dim embedding to 8x8x12 voxel grid.
+        Convert 768-dim embedding to 16x8x16 voxel grid.
         
         Each voxel gets a value representing embedding activation.
+        Uses interpolation to map 768 dims to 2048 voxels.
         
         Args:
             embedding: 768-dim embedding vector
-            grid_size: Target voxel grid dimensions
+            grid_size: Target voxel grid dimensions (default: 16x8x16)
         
         Returns:
             3D list representing voxel grid

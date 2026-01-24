@@ -9,6 +9,7 @@ Features:
 - Agreement ratio calculation
 - Minimum vote threshold (default: 3)
 - Weighted voting based on device accuracy
+- SSE emission on paper validation complete
 """
 
 import logging
@@ -17,6 +18,8 @@ from datetime import datetime
 import json
 
 from ..db import get_db, PaperConsensus, ValidationResult
+from ..api.sse_stream import get_unity_sse_stream
+from ..processing import pdf_to_voxel_grid
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,10 @@ class ConsensusEngine:
             f"Consensus for {paper_id}/{rule_id}: "
             f"match={is_match}, votes={vote_count}, agreement={agreement_ratio:.2f}"
         )
+        
+        # Auto-check if paper is fully validated and emit SSE
+        if is_validated:
+            self.check_and_finalize(paper_id)
         
         return result
     
@@ -254,6 +261,102 @@ class ConsensusEngine:
             "recalculated": recalculated,
             "message": f"Recalculated consensus for {recalculated} paper-rule combinations"
         }
+    
+    async def finalize_paper_consensus(self, paper_id: str) -> Dict[str, Any]:
+        """
+        Finalize consensus for a paper and emit SSE event to Unity.
+        
+        Called when all rules have been validated for a paper.
+        Generates voxel data and sends paper_validated event.
+        
+        Args:
+            paper_id: Paper identifier
+        
+        Returns:
+            Finalization result with voxel data
+        """
+        # Get paper details
+        paper = self.db.get_paper(paper_id)
+        if not paper:
+            return {"status": "error", "message": "Paper not found"}
+        
+        # Get validation status
+        status = self.get_paper_validation_status(paper_id)
+        
+        # Build rules results dict
+        rules_results = {}
+        for rule_status in status.get("rules", []):
+            rules_results[rule_status["rule_id"]] = rule_status.get("is_match", False)
+        
+        # Generate voxel data if PDF available
+        voxel_data = None
+        thumbnail_base64 = None
+        
+        if paper.pdf_local_path:
+            from pathlib import Path
+            pdf_path = Path(paper.pdf_local_path)
+            
+            if pdf_path.exists():
+                # Generate voxels
+                voxel_data = pdf_to_voxel_grid(pdf_path)
+                logger.info(f"Generated voxel data for {paper_id}: {voxel_data['stats']['total']} voxels")
+                
+                # Generate thumbnail
+                try:
+                    from ..api.paper_handler import get_paper_handler
+                    handler = get_paper_handler()
+                    thumb_result = handler.get_thumbnail(paper_id, as_base64=True)
+                    if thumb_result.get("status") == "success":
+                        thumbnail_base64 = thumb_result.get("thumbnail_base64")
+                except Exception as e:
+                    logger.warning(f"Could not generate thumbnail: {e}")
+        
+        # Emit SSE event to Unity
+        sse = get_unity_sse_stream()
+        await sse.emit_paper_validated(
+            paper_id=paper_id,
+            title=paper.title or paper_id,
+            rules_results=rules_results,
+            voxel_data=voxel_data,
+            thumbnail_base64=thumbnail_base64
+        )
+        
+        logger.info(f"Emitted paper_validated SSE for {paper_id}")
+        
+        return {
+            "status": "finalized",
+            "paper_id": paper_id,
+            "title": paper.title,
+            "rules_validated": status.get("rules_validated", 0),
+            "overall_status": status.get("overall_status"),
+            "has_voxel_data": voxel_data is not None,
+            "has_thumbnail": thumbnail_base64 is not None,
+            "voxel_stats": voxel_data.get("stats") if voxel_data else None
+        }
+    
+    def check_and_finalize(self, paper_id: str) -> bool:
+        """
+        Check if paper is fully validated and trigger finalization.
+        
+        Returns:
+            True if finalization was triggered
+        """
+        status = self.get_paper_validation_status(paper_id)
+        
+        if status.get("overall_status") == "validated":
+            # All rules validated - trigger async finalization
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(self.finalize_paper_consensus(paper_id))
+                else:
+                    loop.run_until_complete(self.finalize_paper_consensus(paper_id))
+                return True
+            except Exception as e:
+                logger.error(f"Failed to finalize consensus for {paper_id}: {e}")
+        
+        return False
 
 
 # Singleton instance
