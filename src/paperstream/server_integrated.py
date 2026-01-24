@@ -58,24 +58,35 @@ mcp = FastMCP(
     instructions="""
     PaperStream MCP Server - Scientific Paper Validation Platform
     
-    Tools:
-    - submit_paper: Submit paper for processing (n8n webhook)
-    - process_paper: Process a paper (extract sections, embeddings)
-    - create_rule: Create validation rule with BioBERT embeddings
-    - load_default_rules: Load predefined validation rules
-    - create_jobs: Create validation jobs for papers (REQUIRED before devices can validate!)
-    - get_job_stats: Get job statistics
-    - get_jobs: Get validation jobs for Android devices
-    - submit_validation: Submit validation results
-    - get_paper_status: Get paper validation status
-    - get_leaderboard: Get gamification leaderboard
-    - get_system_stats: Get system statistics
+    COMPLETE WORKFLOW (must follow this order!):
     
-    Workflow:
-    1. submit_paper -> download PDF
-    2. process_paper -> extract sections, generate embeddings  
-    3. create_jobs -> create validation jobs for sections × rules
-    4. Devices fetch jobs via get_jobs and submit results
+    1. load_default_rules() - Load validation rules (once per session)
+    2. submit_paper(paper_id, pdf_url, title) - Submit paper with PDF URL
+    3. download_paper(paper_id) - Download the PDF file
+    4. process_paper(paper_id) - Extract sections, generate embeddings, create jobs
+    5. get_job_stats() - Verify jobs were created
+    
+    OR use batch processing:
+    1. load_default_rules()
+    2. submit_paper(...) for each paper
+    3. process_all_pending() - Downloads + processes ALL pending papers
+    
+    Available Tools:
+    - submit_paper: Submit paper for processing (requires pdf_url for full workflow)
+    - download_paper: Download PDF from submitted url (REQUIRED before process_paper)
+    - process_paper: Extract sections, embeddings, create validation jobs
+    - process_all_pending: Batch process all pending papers
+    - create_rule: Create custom validation rule
+    - load_default_rules: Load 17 predefined validation rules
+    - create_jobs: Manually create jobs (usually automatic via process_paper)
+    - get_job_stats: Get job statistics (pending/assigned/completed)
+    - get_paper_status: Get paper validation status
+    - get_system_stats: Get system statistics
+    - get_leaderboard: Get gamification leaderboard
+    
+    IMPORTANT: Jobs are only created if:
+    1. Paper has been processed (sections exist)
+    2. Rules exist in database (load_default_rules first!)
     """,
     version="1.0.0",
 )
@@ -235,19 +246,175 @@ async def get_system_stats() -> Dict[str, Any]:
     return db.get_stats()
 
 @mcp.tool()
-async def process_paper(paper_id: str) -> Dict[str, Any]:
+async def download_paper(paper_id: str) -> Dict[str, Any]:
     """
-    Process a paper (extract sections, generate embeddings).
+    Download PDF for a paper that was previously submitted.
+    
+    MUST be called after submit_paper if a pdf_url was provided.
+    The PDF must be downloaded before process_paper can work.
     
     Args:
-        paper_id: Paper to process
+        paper_id: Paper ID to download PDF for
     
     Returns:
-        Processing result
+        Download result with status
+    
+    Example:
+        # 1. Submit paper with URL
+        submit_paper(paper_id="PMC123", pdf_url="https://...")
+        # 2. Download the PDF
+        download_paper(paper_id="PMC123")
+        # 3. Now process it
+        process_paper(paper_id="PMC123")
+    """
+    from .api import get_paper_handler
+    from .db import get_db
+    
+    db = get_db()
+    paper = db.get_paper(paper_id)
+    
+    if not paper:
+        return {"error": f"Paper not found: {paper_id}", "status": "failed"}
+    
+    if not paper.pdf_url:
+        return {"error": f"No PDF URL for paper: {paper_id}", "status": "failed"}
+    
+    if paper.pdf_local_path:
+        from pathlib import Path
+        if Path(paper.pdf_local_path).exists():
+            return {
+                "status": "already_downloaded",
+                "paper_id": paper_id,
+                "pdf_path": paper.pdf_local_path
+            }
+    
+    handler = get_paper_handler()
+    success = await handler.download_pdf(paper_id)
+    
+    if success:
+        # Refresh paper data
+        paper = db.get_paper(paper_id)
+        return {
+            "status": "downloaded",
+            "paper_id": paper_id,
+            "pdf_path": paper.pdf_local_path if paper else None
+        }
+    else:
+        return {"error": f"Failed to download PDF for {paper_id}", "status": "failed"}
+
+@mcp.tool()
+async def process_paper(paper_id: str) -> Dict[str, Any]:
+    """
+    Process a paper: extract sections, generate BioBERT embeddings, create voxels.
+    
+    IMPORTANT: The PDF must be downloaded first! Call download_paper() before this.
+    
+    This tool:
+    1. Extracts text sections from the PDF (abstract, methods, results, etc.)
+    2. Generates BioBERT embeddings for each section
+    3. Creates voxel grids for Unity visualization
+    4. Automatically creates validation jobs if rules exist
+    
+    Args:
+        paper_id: Paper ID to process (must have PDF downloaded)
+    
+    Returns:
+        Processing result with sections created and jobs generated
+    
+    Example:
+        # Complete workflow:
+        submit_paper(paper_id="PMC123", pdf_url="https://...")
+        download_paper(paper_id="PMC123")  # Download PDF first!
+        process_paper(paper_id="PMC123")   # Now process
     """
     from .pipeline import get_paper_processor
+    from .db import get_db
+    from .api import get_paper_handler
+    
+    db = get_db()
+    paper = db.get_paper(paper_id)
+    
+    if not paper:
+        return {"error": f"Paper not found: {paper_id}"}
+    
+    # Auto-download if URL exists but PDF not downloaded
+    if paper.pdf_url and not paper.pdf_local_path:
+        logger.info(f"Auto-downloading PDF for {paper_id}")
+        handler = get_paper_handler()
+        success = await handler.download_pdf(paper_id)
+        if not success:
+            return {"error": f"Failed to download PDF for {paper_id}. Check pdf_url."}
+        # Refresh paper data
+        paper = db.get_paper(paper_id)
+    
+    if not paper.pdf_local_path:
+        return {"error": f"No PDF file for paper: {paper_id}. Submit with pdf_url or download manually."}
+    
     processor = get_paper_processor()
     return await processor.process_paper(paper_id)
+
+@mcp.tool()
+async def process_all_pending() -> Dict[str, Any]:
+    """
+    Process all papers that have PDFs but haven't been processed yet.
+    
+    This is a batch operation that:
+    1. Finds all papers with status 'pending' or 'downloading' that have a pdf_url
+    2. Downloads PDFs if needed
+    3. Processes each paper (extract sections, embeddings)
+    4. Creates validation jobs
+    
+    Returns:
+        Batch processing result with counts
+    """
+    from .db import get_db
+    from .api import get_paper_handler
+    from .pipeline import get_paper_processor
+    
+    db = get_db()
+    handler = get_paper_handler()
+    processor = get_paper_processor()
+    
+    results = {
+        "downloaded": 0,
+        "processed": 0,
+        "jobs_created": 0,
+        "failed": 0,
+        "errors": []
+    }
+    
+    # Get pending papers with URLs
+    pending = db.get_papers_by_status("pending", limit=100)
+    downloading = db.get_papers_by_status("downloading", limit=100)
+    all_papers = pending + downloading
+    
+    for paper in all_papers:
+        try:
+            # Download if needed
+            if paper.pdf_url and not paper.pdf_local_path:
+                success = await handler.download_pdf(paper.paper_id)
+                if success:
+                    results["downloaded"] += 1
+                else:
+                    results["failed"] += 1
+                    results["errors"].append(f"Download failed: {paper.paper_id}")
+                    continue
+            
+            # Refresh and process
+            paper = db.get_paper(paper.paper_id)
+            if paper and paper.pdf_local_path:
+                result = await processor.process_paper(paper.paper_id)
+                if "error" not in result:
+                    results["processed"] += 1
+                    results["jobs_created"] += result.get("jobs_created", 0)
+                else:
+                    results["failed"] += 1
+                    results["errors"].append(f"{paper.paper_id}: {result['error']}")
+        except Exception as e:
+            results["failed"] += 1
+            results["errors"].append(f"{paper.paper_id}: {str(e)}")
+    
+    return results
 
 @mcp.tool()
 async def load_default_rules() -> Dict[str, Any]:

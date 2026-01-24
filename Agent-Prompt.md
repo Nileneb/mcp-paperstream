@@ -29,68 +29,93 @@ Endpoint http://192.168.178.11:8089/sse
 
 | Tool | Description | Required Parameters | Optional Parameters |
 |------|-------------|---------------------|---------------------|
+| `load_default_rules` | Load 17 predefined validation rules (FIRST!) | - | - |
 | `submit_paper` | Submit paper for processing | `paper_id` (e.g. "PMC12345") | `title`, `pdf_url`, `priority` ("1"-"10"), `source` |
-| `process_paper` | Extract sections & generate embeddings | `paper_id` | - |
-| `create_rule` | Create validation rule with BioBERT | `rule_id`, `question`, `positive_phrases` (comma-sep) | `negative_phrases`, `threshold` ("0.0"-"1.0") |
-| `load_default_rules` | Load 17 predefined validation rules | - | - |
-| `create_jobs` | **CRITICAL:** Create validation jobs | - | `paper_id` (empty = all ready papers) |
+| `download_paper` | Download PDF from URL | `paper_id` | - |
+| `process_paper` | Extract sections, embeddings, create jobs | `paper_id` | - |
+| `process_all_pending` | Batch: download + process ALL pending papers | - | - |
+| `create_rule` | Create custom validation rule | `rule_id`, `question`, `positive_phrases` | `negative_phrases`, `threshold` |
+| `create_jobs` | Manually create jobs (usually automatic) | - | `paper_id` |
 | `get_job_stats` | Get job statistics | - | - |
 | `get_paper_status` | Get paper validation status | `paper_id` | - |
-| `get_leaderboard` | Get gamification leaderboard | - | `limit` ("10") |
 | `get_system_stats` | Get system statistics | - | - |
+| `get_leaderboard` | Get gamification leaderboard | - | `limit` |
 
-**⚠️ CRITICAL WORKFLOW - MUST FOLLOW THIS ORDER:**
+**⚠️ KRITISCHER WORKFLOW - MUSS IN DIESER REIHENFOLGE AUSGEFÜHRT WERDEN:**
 
 ```
-1. submit_paper(paper_id="PMC12345", title="...", pdf_url="...")
-   → Paper wird in DB angelegt, PDF wird heruntergeladen
+# SCHRITT 1: Rules laden (EINMALIG pro Session!)
+load_default_rules()
+# → Lädt 17 vordefinierte Validation Rules
 
-2. process_paper(paper_id="PMC12345")  
-   → PDF wird verarbeitet: Sections extrahiert, BioBERT Embeddings generiert
-   → Status wechselt von "pending" → "processing" → "ready"
+# SCHRITT 2: Paper einreichen
+submit_paper(
+    paper_id="PMC12345",
+    title="A Randomized Trial...",
+    pdf_url="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC12345/pdf/",
+    priority="8",
+    source="n8n"
+)
+# → Paper wird in DB angelegt, Status: "pending"
 
-3. create_jobs(paper_id="PMC12345")  ← OHNE DIESEN SCHRITT KEINE VALIDATION!
-   → Erstellt Jobs für jede Kombination: Sections × Rules
-   → Jobs werden an Android/Unity Devices verteilt
+# SCHRITT 3: PDF herunterladen
+download_paper(paper_id="PMC12345")
+# → PDF wird von der URL heruntergeladen
+# → Status wechselt zu "downloading" → "processing"
 
-4. get_job_stats() 
-   → Prüfen ob Jobs erstellt wurden
+# SCHRITT 4: Paper verarbeiten
+process_paper(paper_id="PMC12345")
+# → PDF wird analysiert:
+#   - Text wird extrahiert
+#   - Sections werden erkannt (abstract, methods, results, etc.)
+#   - BioBERT Embeddings werden generiert
+#   - Voxel Grids für Unity werden erstellt
+#   - Validation Jobs werden AUTOMATISCH erstellt!
+# → Status wechselt zu "ready"
+
+# SCHRITT 5: Prüfen ob Jobs erstellt wurden
+get_job_stats()
+# → Zeigt: pending, assigned, completed jobs
+# → Wenn jobs.pending > 0: Alles korrekt!
 ```
 
-**BATCH PROCESSING (für viele Papers):**
+**BATCH PROCESSING (für viele Papers gleichzeitig):**
 ```
-# Alle gefundenen Papers einreichen
-for paper in search_results:
-    submit_paper(paper_id=paper.id, title=paper.title, pdf_url=paper.pdf_url)
-
-# Alle pending Papers verarbeiten (oder einzeln mit process_paper)
-# Warten bis Status = "ready"
-
-# Jobs für ALLE ready Papers erstellen (ohne paper_id Parameter!)
-create_jobs()  
-```
-
-**VALIDATION RULES SETUP (einmalig oder bei neuer PICO-Analyse):**
-```
-# Option 1: Default-Rules laden (empfohlen für Start)
+# 1. Rules laden (einmalig)
 load_default_rules()
 
-# Option 2: Custom Rules für spezifische PICO-Analyse
-create_rule(
-    rule_id="is_rct",
-    question="Is this a randomized controlled trial?",
-    positive_phrases="randomized controlled trial, RCT, randomization, placebo-controlled",
-    negative_phrases="review, meta-analysis, case report, editorial",
-    threshold="0.7"
-)
+# 2. Alle Papers einreichen
+for paper in search_results:
+    submit_paper(
+        paper_id=paper.pmid or paper.doi,
+        title=paper.title,
+        pdf_url=paper.pdf_url,
+        source="n8n"
+    )
+
+# 3. ALLE pending Papers auf einmal verarbeiten
+process_all_pending()
+# → Lädt automatisch alle PDFs herunter
+# → Verarbeitet alle Papers
+# → Erstellt alle Jobs
+# → Gibt Zusammenfassung zurück
+
+# 4. Status prüfen
+get_job_stats()
 ```
 
+**WARUM DIESER WORKFLOW?**
+- Jobs können NUR erstellt werden wenn:
+  1. Rules existieren (load_default_rules)
+  2. Paper Sections existieren (process_paper extrahiert diese aus dem PDF)
+- Ohne PDF → keine Sections → keine Jobs!
+- Ohne Rules → keine Jobs!
+
 Execution Strategy: 
-1. Load rules FIRST (only once per session)
-2. Submit papers in batches
-3. Process papers (wait for "ready" status)
-4. Create jobs for all ready papers
-5. Monitor with get_job_stats()
+1. IMMER zuerst load_default_rules() aufrufen (nur einmal nötig)
+2. Papers mit pdf_url einreichen
+3. process_all_pending() für Batch-Verarbeitung ODER einzeln mit download_paper + process_paper
+4. Mit get_job_stats() verifizieren
 
 AUTONOMOUS PICO FRAMEWORK
 
