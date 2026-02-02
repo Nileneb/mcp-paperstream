@@ -307,7 +307,7 @@ def base64_to_embedding(b64_str: str) -> np.ndarray:
     return np.frombuffer(base64.b64decode(b64_str), dtype=np.float32)
 
 
-def create_chunk(
+def create_chunk_from_embedding(
     chunk_id: int,
     chunk_type: str,
     text: str,
@@ -316,7 +316,7 @@ def create_chunk(
     connects_to: Optional[List[int]] = None,
     threshold: float = DEFAULT_VOXEL_THRESHOLD
 ) -> Chunk:
-    """Create a Chunk from text + embedding"""
+    """Create a Chunk from text + embedding (alias: create_chunk)"""
     color_rgb = SECTION_COLORS.get(chunk_type, SECTION_COLORS["other"])
     
     return Chunk(
@@ -331,6 +331,10 @@ def create_chunk(
     )
 
 
+# Alias for backwards compatibility
+create_chunk = create_chunk_from_embedding
+
+
 def create_paper_molecule(
     paper_id: str,
     title: str,
@@ -340,7 +344,7 @@ def create_paper_molecule(
     """Create Paper Molecule (chain of section chunks)"""
     chunks = []
     for idx, section in enumerate(sections):
-        chunk = create_chunk(
+        chunk = create_chunk_from_embedding(
             chunk_id=idx,
             chunk_type=section["name"],
             text=section["text"],
@@ -373,7 +377,7 @@ def create_rule_molecule(
     """Create Rule Molecule (dipole of pos/neg chunks)"""
     chunks = []
     
-    pos_chunk = create_chunk(
+    pos_chunk = create_chunk_from_embedding(
         chunk_id=0,
         chunk_type="positive",
         text=pos_text,
@@ -385,7 +389,7 @@ def create_rule_molecule(
     chunks.append(pos_chunk)
     
     if neg_embedding is not None:
-        neg_chunk = create_chunk(
+        neg_chunk = create_chunk_from_embedding(
             chunk_id=1,
             chunk_type="negative",
             text=neg_text,
