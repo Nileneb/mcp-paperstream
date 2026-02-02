@@ -1,0 +1,63 @@
+{
+  "version": "0.2.0",
+  "contract": "DATAMODEL.md",
+  "generated_with": "Mock",
+  "papers": {
+    "rct_abstract": {
+      "text_preview": "\n    Background: Randomized controlled trials (RCTs) are the gold standard for evaluating \n    treatment efficacy. This study aims to evaluate the effectiveness of a new intervention.\n    Methods: We ...",
+      "embedding_stats": {
+        "mean": 0.09737664461135864,
+        "std": 1.0041680335998535,
+        "min": -3.0079216957092285,
+        "max": 3.036369562149048
+      },
+      "voxel_count": 448,
+      "fill_ratio": 0.5833333333333334
+    },
+    "review_abstract": {
+      "text_preview": "\n    This systematic review and meta-analysis examines the current evidence on treatment \n    approaches for the condition. We searched PubMed, Cochrane Library, and EMBASE databases.\n    A total of 4...",
+      "embedding_stats": {
+        "mean": -0.00015619646001141518,
+        "std": 1.0264902114868164,
+        "min": -3.1944074630737305,
+        "max": 3.27679443359375
+      },
+      "voxel_count": 437,
+      "fill_ratio": 0.5690104166666666
+    },
+    "case_study": {
+      "text_preview": "\n    We present a rare case of a 45-year-old male presenting with unusual symptoms.\n    The patient reported a 3-month history of progressive weakness. Physical examination \n    revealed specific clin...",
+      "embedding_stats": {
+        "mean": 0.07430186122655869,
+        "std": 1.0433324575424194,
+        "min": -3.177694082260132,
+        "max": 3.081540822982788
+      },
+      "voxel_count": 444,
+      "fill_ratio": 0.578125
+    },
+    "methods_section": {
+      "text_preview": "\n    Study Design: This was a prospective cohort study conducted at three tertiary care centers.\n    Participants: Adults aged 18-65 years with confirmed diagnosis were eligible.\n    Exclusion criteri...",
+      "embedding_stats": {
+        "mean": 0.05870071053504944,
+        "std": 1.0111312866210938,
+        "min": -2.9865102767944336,
+        "max": 3.1455905437469482
+      },
+      "voxel_count": 444,
+      "fill_ratio": 0.578125
+    }
+  },
+  "rules": {
+    "is_rct": {
+      "question": "Is this a Randomized Controlled Trial?",
+      "positive_voxels": 448,
+      "negative_voxels": 444
+    },
+    "has_methods": {
+      "question": "Does this paper have a clear methods section?",
+      "positive_voxels": 448,
+      "negative_voxels": 449
+    }
+  }
+}

@@ -12,8 +12,8 @@ import json
 import sys
 from pathlib import Path
 
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add src to path for direct imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np
 
@@ -27,15 +27,23 @@ except ImportError:
     print("WARNING: transformers not installed. Using mock embeddings.")
     print("Install with: pip install transformers torch")
 
-from paperstream.core.data_model import (
-    create_rule_molecule,
-    create_paper_molecule,
-    embedding_to_voxel_grid,
-    enhance_visual_contrast,
-    Molecule,
-    VoxelGrid,
-    VOXEL_TOTAL
+# Direct import from core module (avoids server dependencies)
+# Import the module file directly to avoid __init__.py side effects
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    "data_model",
+    Path(__file__).parent.parent / "src" / "paperstream" / "core" / "data_model.py"
 )
+data_model = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(data_model)
+
+create_rule_molecule = data_model.create_rule_molecule
+create_paper_molecule = data_model.create_paper_molecule
+embedding_to_voxel_grid = data_model.embedding_to_voxel_grid
+enhance_visual_contrast = data_model.enhance_visual_contrast
+Molecule = data_model.Molecule
+VoxelGrid = data_model.VoxelGrid
+VOXEL_TOTAL = data_model.VOXEL_TOTAL
 
 
 # Sample texts for different paper types
