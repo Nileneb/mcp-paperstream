@@ -318,7 +318,7 @@ class RuleHandler:
             "threshold": rule.threshold
         }
     
-    def get_rule_chunks(self, rule_id: str) -> Optional[Dict[str, Any]]:
+    def get_rule_chunks(self, rule_id: str, voxel_threshold: float = 0.3) -> Optional[Dict[str, Any]]:
         """
         Get rule as chunks for Unity "Rule-Molecule" visualization.
         
@@ -331,6 +331,10 @@ class RuleHandler:
         - color: RGB (green=positive, red=negative)
         - position: 3D position (Chunk = INVISIBLE container)
         - connects_to: Link between positive and negative
+        
+        Args:
+            rule_id: Rule identifier
+            voxel_threshold: Threshold for voxel activation (default 0.3, DATAMODEL.md contract)
         
         Unity renders:
         1. Chunk = invisible cube at position (0,0,0 origin for voxels)
@@ -349,8 +353,8 @@ class RuleHandler:
             pos_b64 = base64.b64encode(pos_emb.tobytes()).decode('utf-8')
             positive_phrases = json.loads(rule.positive_phrases) if rule.positive_phrases else []
             
-            # Create voxel grid from embedding
-            pos_voxels = VoxelGrid.from_embedding(pos_emb, threshold=0.1)
+            # Create voxel grid from embedding (use configurable threshold, default 0.3)
+            pos_voxels = VoxelGrid.from_embedding(pos_emb, threshold=voxel_threshold)
             
             chunks.append({
                 "chunk_id": 0,
@@ -370,8 +374,8 @@ class RuleHandler:
             neg_b64 = base64.b64encode(neg_emb.tobytes()).decode('utf-8')
             negative_phrases = json.loads(rule.negative_phrases) if rule.negative_phrases else []
             
-            # Create voxel grid from embedding
-            neg_voxels = VoxelGrid.from_embedding(neg_emb, threshold=0.1)
+            # Create voxel grid from embedding (use configurable threshold, default 0.3)
+            neg_voxels = VoxelGrid.from_embedding(neg_emb, threshold=voxel_threshold)
             
             chunks.append({
                 "chunk_id": 1,

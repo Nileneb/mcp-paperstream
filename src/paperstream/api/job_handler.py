@@ -420,7 +420,7 @@ class JobHandler:
         embedding_b64, _ = self._get_paper_embedding_and_text(paper_id)
         return embedding_b64
     
-    def _get_paper_chunks(self, paper_id: str) -> List[Dict[str, Any]]:
+    def _get_paper_chunks(self, paper_id: str, voxel_threshold: float = 0.3) -> List[Dict[str, Any]]:
         """
         Get ALL section embeddings as chunks for Unity molecule visualization.
         
@@ -433,6 +433,10 @@ class JobHandler:
         - color: RGB for visualization
         - position: 3D position (Chunk = INVISIBLE container at this position)
         - connects_to: Links to next chunk (wires/lanes)
+        
+        Args:
+            paper_id: Paper identifier
+            voxel_threshold: Threshold for voxel activation (default 0.3, DATAMODEL.md contract)
         
         Unity renders:
         1. Chunk = invisible cube at position (0,0,0 origin for voxels)
@@ -473,9 +477,9 @@ class JobHandler:
                     embedding_bytes = row["embedding"]
                     if isinstance(embedding_bytes, bytes):
                         embedding_b64 = base64.b64encode(embedding_bytes).decode('utf-8')
-                        # Create voxel grid from embedding
+                        # Create voxel grid from embedding (use configurable threshold, default 0.3)
                         embedding_array = np.frombuffer(embedding_bytes, dtype=np.float32)
-                        voxel_grid = VoxelGrid.from_embedding(embedding_array, threshold=0.1)
+                        voxel_grid = VoxelGrid.from_embedding(embedding_array, threshold=voxel_threshold)
                     else:
                         embedding_b64 = embedding_bytes
                         voxel_grid = VoxelGrid(voxels=[])

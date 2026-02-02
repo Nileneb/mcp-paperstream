@@ -1,89 +1,199 @@
 """
 Unified Data Model for PaperStream
 ==================================
+Version: 0.2.0 (DATAMODEL.md Contract)
 
 This module defines the canonical data structures that ensure Papers and Rules
-are processed identically:
+are processed identically between Python backend and Unity frontend.
 
 HIERARCHY:
 ----------
 Text (Paper/Rule) → Embedding (768-dim BioBERT) → Chunk (container) → Voxels (visible)
 
-DEFINITIONS:
-------------
-1. TEXT: Source content
-   - Paper: PDF sections (abstract, methods, results, etc.)
-   - Rule: Positive/negative phrase lists
+CRITICAL INVARIANT:
+-------------------
+embedding_to_voxel_grid() MUST produce identical results in Python and C#!
+The Unity implementation is in: ValidationGame/Assets/Scripts/Voxel/EmbeddingToVoxel.cs
 
-2. EMBEDDING: 768-dimensional BioBERT vector
-   - Semantic representation of text
-   - Base64 encoded for transport: `embedding_b64`
-
-3. CHUNK: Container for embeddings
-   - Unity: Invisible cube at (0,0,0) local space
-   - Contains: embedding + voxels + metadata
-   - Paper has N chunks (one per section)
-   - Rule has 2 chunks (positive + negative)
-
-4. VOXELS: 8x8x12 grid (768 values = embedding reshaped)
-   - Unity: Visible cubes for interaction
-   - Each voxel = one embedding dimension visualized
-   - Grid dimensions match BioBERT embedding size
-
-WIRE/CONNECTIONS:
------------------
-- Chunks are connected with "wires/lanes" showing relationships
-- Paper: abstract → intro → methods → results → discussion (sequential)
-- Rule: positive ↔ negative (polar/dipole)
-
-UNITY RENDERING:
-----------------
-1. Create invisible container (Chunk) at world position
-2. For each voxel in chunk.voxels: spawn visible cube at local position
-3. Draw wires between connected chunks using chunk.connects_to
+VOXEL MAPPING:
+--------------
+embedding[i] → voxel[x,y,z] where:
+    i = x + y*8 + z*64
+    x ∈ [0,7], y ∈ [0,7], z ∈ [0,11]
+    
+To iterate correctly:
+    for z in range(12):      # Outer loop
+        for y in range(8):   # Middle loop
+            for x in range(8): # Inner loop
+                i = x + y*8 + z*64
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import base64
 import json
 
 
 # ============================================================================
-# CONSTANTS
+# CONSTANTS (CONTRACT VALUES - DO NOT CHANGE)
 # ============================================================================
 
-# Voxel grid dimensions (8 * 8 * 12 = 768 = BioBERT embedding size)
 VOXEL_GRID_X = 8   # Width
 VOXEL_GRID_Y = 8   # Height (layers)
 VOXEL_GRID_Z = 12  # Depth
+VOXEL_TOTAL = VOXEL_GRID_X * VOXEL_GRID_Y * VOXEL_GRID_Z  # 768
 
-# Section colors (RGB 0-1)
+DEFAULT_VOXEL_THRESHOLD = 0.3
+
+# Section colors (RGB 0-1) - matched with Unity ChunkColor
 SECTION_COLORS = {
-    "abstract":     (0.2, 0.6, 0.9),   # Blue
-    "introduction": (0.3, 0.8, 0.3),   # Green
-    "methods":      (0.9, 0.7, 0.2),   # Yellow/Orange
-    "results":      (0.8, 0.3, 0.3),   # Red
-    "discussion":   (0.7, 0.4, 0.9),   # Purple
+    "abstract":     (0.2, 0.6, 0.9),   # Blue - #3399E6
+    "introduction": (0.3, 0.8, 0.3),   # Green - #4DCC4D
+    "methods":      (0.9, 0.7, 0.2),   # Yellow/Orange - #E6B233
+    "results":      (0.8, 0.3, 0.3),   # Red - #CC4D4D
+    "discussion":   (0.7, 0.4, 0.9),   # Purple - #B266E6
     "conclusion":   (0.5, 0.5, 0.5),   # Gray
     "references":   (0.4, 0.4, 0.4),   # Dark gray
-    "positive":     (0.2, 0.9, 0.3),   # Bright green (rules)
-    "negative":     (0.9, 0.2, 0.2),   # Bright red (rules)
+    "positive":     (0.2, 0.9, 0.3),   # Bright green - #33E64D
+    "negative":     (0.9, 0.2, 0.2),   # Bright red - #E63333
     "other":        (0.5, 0.5, 0.5),   # Default gray
 }
 
-# Layout types
-LAYOUT_CHAIN = "chain"      # Sequential (papers)
-LAYOUT_DIPOLE = "dipole"    # Two poles (rules)
-
-# Connection types
-CONNECTION_SEQUENTIAL = "sequential"  # One after another
-CONNECTION_POLAR = "polar"            # Opposing forces
+LAYOUT_CHAIN = "chain"
+LAYOUT_DIPOLE = "dipole"
+CONNECTION_SEQUENTIAL = "sequential"
+CONNECTION_POLAR = "polar"
 
 
 # ============================================================================
-# CORE DATA CLASSES
+# CORE TRANSFORMATION FUNCTIONS (MUST MATCH C# EXACTLY)
+# ============================================================================
+
+def enhance_visual_contrast(embedding: np.ndarray) -> np.ndarray:
+    """
+    Verstärkt Unterschiede für bessere visuelle Erkennbarkeit.
+    
+    MUST MATCH C# EmbeddingToVoxel.EnhanceVisualContrast() EXACTLY!
+    
+    Algorithm:
+    1. centered = emb - mean(emb)
+    2. amplified = tanh(centered * 2.0)
+    3. result = (amplified + 1.0) / 2.0
+    
+    Args:
+        embedding: Input array (typically 768-dim BioBERT)
+    
+    Returns:
+        Enhanced values in [0, 1] range
+    """
+    emb = np.array(embedding, dtype=np.float32).flatten()
+    
+    if len(emb) == 0:
+        return np.zeros(VOXEL_TOTAL, dtype=np.float32)
+    
+    # 1. Center around mean
+    mean = emb.mean()
+    centered = emb - mean
+    
+    # 2. Amplify with tanh
+    amplified = np.tanh(centered * 2.0)
+    
+    # 3. Rescale to [0, 1]
+    result = (amplified + 1.0) / 2.0
+    
+    # Pad to 768 if needed
+    if len(result) < VOXEL_TOTAL:
+        padded = np.full(VOXEL_TOTAL, 0.5, dtype=np.float32)
+        padded[:len(result)] = result
+        return padded
+    
+    return result[:VOXEL_TOTAL]
+
+
+def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
+    """
+    Normalizes array to [0, 1] range.
+    
+    MUST MATCH C# EmbeddingToVoxel.Normalize() EXACTLY!
+    """
+    emb = np.array(embedding, dtype=np.float32).flatten()
+    
+    if len(emb) == 0:
+        return np.zeros(VOXEL_TOTAL, dtype=np.float32)
+    
+    emb_min = emb.min()
+    emb_max = emb.max()
+    
+    denom = emb_max - emb_min
+    if denom < 1e-8:
+        denom = 1e-8
+    
+    normalized = (emb - emb_min) / denom
+    return normalized
+
+
+def embedding_to_voxel_grid(
+    embedding: np.ndarray,
+    threshold: float = DEFAULT_VOXEL_THRESHOLD,
+    enhance_contrast: bool = True
+) -> List['Voxel']:
+    """
+    Convert 768-dim embedding to voxel positions.
+    
+    MUST MATCH C# EmbeddingToVoxel.ConvertToPositions() EXACTLY!
+    
+    Mapping: i = x + y*8 + z*64
+    
+    Iteration order (important for consistency):
+        for z in range(12):
+            for y in range(8):
+                for x in range(8):
+    
+    Args:
+        embedding: 768-dim BioBERT embedding
+        threshold: Minimum value to create voxel (default 0.3)
+        enhance_contrast: Apply visual enhancement (default True)
+    
+    Returns:
+        List of Voxel objects
+    """
+    emb = np.array(embedding, dtype=np.float32).flatten()
+    
+    # Pad or truncate to exactly 768
+    if len(emb) != VOXEL_TOTAL:
+        if len(emb) > VOXEL_TOTAL:
+            emb = emb[:VOXEL_TOTAL]
+        else:
+            padded = np.zeros(VOXEL_TOTAL, dtype=np.float32)
+            padded[:len(emb)] = emb
+            emb = padded
+    
+    # Apply transformation
+    if enhance_contrast:
+        processed = enhance_visual_contrast(emb)
+    else:
+        processed = emb
+    
+    # Normalize to [0, 1]
+    normalized = normalize_embedding(processed)
+    
+    # Create voxels - EXACT SAME ITERATION ORDER AS C#
+    voxels = []
+    for z in range(VOXEL_GRID_Z):
+        for y in range(VOXEL_GRID_Y):
+            for x in range(VOXEL_GRID_X):
+                i = x + y * VOXEL_GRID_X + z * (VOXEL_GRID_X * VOXEL_GRID_Y)
+                value = float(normalized[i])
+                
+                if value >= threshold:
+                    voxels.append(Voxel(x=x, y=y, z=z, value=value))
+    
+    return voxels
+
+
+# ============================================================================
+# DATA CLASSES
 # ============================================================================
 
 @dataclass
@@ -92,99 +202,54 @@ class Voxel:
     x: int
     y: int
     z: int
-    value: float  # 0-1 normalized embedding value
+    value: float
     
     def to_dict(self) -> Dict[str, Any]:
         return {"x": self.x, "y": self.y, "z": self.z, "v": round(self.value, 4)}
     
     def to_list(self) -> List:
+        """[x, y, z, value] format for JSON transport"""
         return [self.x, self.y, self.z, round(self.value, 4)]
 
 
 @dataclass
 class VoxelGrid:
-    """
-    8x8x12 voxel grid representing a 768-dim embedding.
-    
-    Unity renders this as visible cubes within a Chunk container.
-    """
+    """8x8x12 voxel grid representing a 768-dim embedding"""
     voxels: List[Voxel]
-    grid_size: tuple = (VOXEL_GRID_X, VOXEL_GRID_Y, VOXEL_GRID_Z)
+    grid_size: Tuple[int, int, int] = (VOXEL_GRID_X, VOXEL_GRID_Y, VOXEL_GRID_Z)
     
     @classmethod
-    def from_embedding(cls, embedding: np.ndarray, threshold: float = 0.1) -> "VoxelGrid":
-        """
-        Convert 768-dim embedding to voxel grid.
-        
-        Args:
-            embedding: 768-dim BioBERT embedding
-            threshold: Minimum value to create a voxel (0-1)
-        
-        Returns:
-            VoxelGrid with active voxels
-        """
-        # Ensure correct size
-        emb = np.array(embedding, dtype=np.float32).flatten()
-        if len(emb) != 768:
-            # Interpolate to 768 if needed
-            indices = np.linspace(0, len(emb) - 1, 768).astype(int)
-            emb = emb[indices]
-        
-        # Normalize to 0-1
-        emb_min, emb_max = emb.min(), emb.max()
-        if emb_max > emb_min:
-            normalized = (emb - emb_min) / (emb_max - emb_min)
-        else:
-            normalized = np.zeros(768)
-        
-        # Reshape to 8x8x12
-        grid_3d = normalized.reshape((VOXEL_GRID_X, VOXEL_GRID_Y, VOXEL_GRID_Z))
-        
-        # Create voxels above threshold
-        voxels = []
-        for x in range(VOXEL_GRID_X):
-            for y in range(VOXEL_GRID_Y):
-                for z in range(VOXEL_GRID_Z):
-                    value = float(grid_3d[x, y, z])
-                    if value >= threshold:
-                        voxels.append(Voxel(x=x, y=y, z=z, value=value))
-        
+    def from_embedding(
+        cls,
+        embedding: np.ndarray,
+        threshold: float = DEFAULT_VOXEL_THRESHOLD,
+        enhance_contrast: bool = True
+    ) -> "VoxelGrid":
+        """Create grid from embedding using canonical transformation"""
+        voxels = embedding_to_voxel_grid(embedding, threshold, enhance_contrast)
         return cls(voxels=voxels)
     
     def to_dict(self) -> Dict[str, Any]:
+        """Export matching DATAMODEL.md contract"""
         return {
             "grid_size": list(self.grid_size),
             "voxels": [v.to_list() for v in self.voxels],
             "voxel_count": len(self.voxels),
-            "fill_ratio": round(len(self.voxels) / (8*8*12), 3)
+            "fill_ratio": round(len(self.voxels) / VOXEL_TOTAL, 3)
         }
-    
-    def to_3d_array(self) -> List[List[List[float]]]:
-        """Return as nested 3D array for Unity"""
-        grid = np.zeros((VOXEL_GRID_X, VOXEL_GRID_Y, VOXEL_GRID_Z))
-        for v in self.voxels:
-            grid[v.x, v.y, v.z] = v.value
-        return grid.tolist()
 
 
 @dataclass
 class Chunk:
-    """
-    Container for an embedding - the building block of molecules.
-    
-    In Unity:
-    - Chunk = invisible cube at position, defines local origin (0,0,0)
-    - Voxels inside = visible cubes relative to chunk position
-    - Wires connect chunks via connects_to
-    """
+    """Container for embedding + voxels"""
     chunk_id: int
-    chunk_type: str  # "abstract", "methods", "positive", "negative", etc.
-    text_preview: str  # First ~500 chars of source text
-    embedding_b64: str  # 768-dim as base64 float32
-    voxels: VoxelGrid  # 8x8x12 voxel representation
-    color: Dict[str, float]  # {"r": 0-1, "g": 0-1, "b": 0-1}
-    position: Dict[str, float]  # {"x": float, "y": float, "z": float}
-    connects_to: List[int]  # IDs of connected chunks
+    chunk_type: str
+    text_preview: str
+    embedding_b64: str
+    voxels: VoxelGrid
+    color: Dict[str, float]
+    position: Dict[str, float]
+    connects_to: List[int]
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -201,18 +266,13 @@ class Chunk:
 
 @dataclass
 class Molecule:
-    """
-    A molecule is a collection of connected chunks.
-    
-    - Paper Molecule: Chain of section chunks (abstract → intro → methods → ...)
-    - Rule Molecule: Dipole with positive/negative chunks
-    """
+    """Collection of connected chunks (Paper or Rule)"""
     molecule_id: str
-    molecule_type: str  # "paper" or "rule"
+    molecule_type: str
     title: str
     chunks: List[Chunk]
-    layout: str  # "chain" or "dipole"
-    connection_type: str  # "sequential" or "polar"
+    layout: str
+    connection_type: str
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -222,7 +282,7 @@ class Molecule:
             "chunks": [c.to_dict() for c in self.chunks],
             "chunks_count": len(self.chunks),
             "molecule_config": {
-                "embedding_dim": 768,
+                "embedding_dim": VOXEL_TOTAL,
                 "voxel_grid": [VOXEL_GRID_X, VOXEL_GRID_Y, VOXEL_GRID_Z],
                 "layout": self.layout,
                 "connection_type": self.connection_type,
@@ -236,29 +296,27 @@ class Molecule:
 # ============================================================================
 
 def embedding_to_base64(embedding: np.ndarray) -> str:
-    """Convert numpy embedding to base64 string"""
-    return base64.b64encode(np.array(embedding, dtype=np.float32).tobytes()).decode('utf-8')
+    """Convert numpy embedding to base64 (float32 bytes)"""
+    return base64.b64encode(
+        np.array(embedding, dtype=np.float32).tobytes()
+    ).decode('utf-8')
 
 
 def base64_to_embedding(b64_str: str) -> np.ndarray:
-    """Convert base64 string back to numpy embedding"""
+    """Convert base64 back to numpy embedding"""
     return np.frombuffer(base64.b64decode(b64_str), dtype=np.float32)
 
 
-def create_chunk_from_embedding(
+def create_chunk(
     chunk_id: int,
     chunk_type: str,
     text: str,
     embedding: np.ndarray,
-    position_x: float = 0.0,
+    position: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     connects_to: Optional[List[int]] = None,
-    voxel_threshold: float = 0.1
+    threshold: float = DEFAULT_VOXEL_THRESHOLD
 ) -> Chunk:
-    """
-    Create a standardized Chunk from text + embedding.
-    
-    This is the CANONICAL way to create chunks for both Papers and Rules.
-    """
+    """Create a Chunk from text + embedding"""
     color_rgb = SECTION_COLORS.get(chunk_type, SECTION_COLORS["other"])
     
     return Chunk(
@@ -266,9 +324,9 @@ def create_chunk_from_embedding(
         chunk_type=chunk_type,
         text_preview=text[:500] if text else "",
         embedding_b64=embedding_to_base64(embedding),
-        voxels=VoxelGrid.from_embedding(embedding, threshold=voxel_threshold),
+        voxels=VoxelGrid.from_embedding(embedding, threshold=threshold),
         color={"r": color_rgb[0], "g": color_rgb[1], "b": color_rgb[2]},
-        position={"x": position_x, "y": 0.0, "z": 0.0},
+        position={"x": position[0], "y": position[1], "z": position[2]},
         connects_to=connects_to or []
     )
 
@@ -276,28 +334,20 @@ def create_chunk_from_embedding(
 def create_paper_molecule(
     paper_id: str,
     title: str,
-    sections: List[Dict[str, Any]]
+    sections: List[Dict[str, Any]],
+    threshold: float = DEFAULT_VOXEL_THRESHOLD
 ) -> Molecule:
-    """
-    Create Paper Molecule from sections.
-    
-    Args:
-        paper_id: Paper identifier
-        title: Paper title
-        sections: List of {"name": str, "text": str, "embedding": np.ndarray}
-    
-    Returns:
-        Molecule with chain layout
-    """
+    """Create Paper Molecule (chain of section chunks)"""
     chunks = []
     for idx, section in enumerate(sections):
-        chunk = create_chunk_from_embedding(
+        chunk = create_chunk(
             chunk_id=idx,
             chunk_type=section["name"],
             text=section["text"],
             embedding=section["embedding"],
-            position_x=idx * 2.0,  # Space chunks along X
-            connects_to=[idx + 1] if idx < len(sections) - 1 else []
+            position=(idx * 2.0, 0.0, 0.0),
+            connects_to=[idx + 1] if idx < len(sections) - 1 else [],
+            threshold=threshold
         )
         chunks.append(chunk)
     
@@ -314,49 +364,35 @@ def create_paper_molecule(
 def create_rule_molecule(
     rule_id: str,
     question: str,
-    pos_phrases: List[str],
-    neg_phrases: List[str],
     pos_embedding: np.ndarray,
-    neg_embedding: Optional[np.ndarray] = None
+    neg_embedding: Optional[np.ndarray] = None,
+    pos_text: str = "",
+    neg_text: str = "",
+    threshold: float = DEFAULT_VOXEL_THRESHOLD
 ) -> Molecule:
-    """
-    Create Rule Molecule with positive/negative dipole.
-    
-    Args:
-        rule_id: Rule identifier
-        question: The validation question
-        pos_phrases: Positive indicator phrases
-        neg_phrases: Negative indicator phrases
-        pos_embedding: 768-dim embedding for positive
-        neg_embedding: 768-dim embedding for negative (optional)
-    
-    Returns:
-        Molecule with dipole layout
-    """
+    """Create Rule Molecule (dipole of pos/neg chunks)"""
     chunks = []
     
-    # Chunk 0: Positive (always present)
-    pos_text = ", ".join(pos_phrases[:5]) + ("..." if len(pos_phrases) > 5 else "")
-    pos_chunk = create_chunk_from_embedding(
+    pos_chunk = create_chunk(
         chunk_id=0,
         chunk_type="positive",
         text=pos_text,
         embedding=pos_embedding,
-        position_x=0.0,
-        connects_to=[1] if neg_embedding is not None else []
+        position=(0.0, 0.0, 0.0),
+        connects_to=[1] if neg_embedding is not None else [],
+        threshold=threshold
     )
     chunks.append(pos_chunk)
     
-    # Chunk 1: Negative (if exists)
     if neg_embedding is not None:
-        neg_text = ", ".join(neg_phrases[:5]) + ("..." if len(neg_phrases) > 5 else "")
-        neg_chunk = create_chunk_from_embedding(
+        neg_chunk = create_chunk(
             chunk_id=1,
             chunk_type="negative",
             text=neg_text,
             embedding=neg_embedding,
-            position_x=2.0,
-            connects_to=[]
+            position=(3.0, 0.0, 0.0),
+            connects_to=[],
+            threshold=threshold
         )
         chunks.append(neg_chunk)
     
@@ -368,3 +404,49 @@ def create_rule_molecule(
         layout=LAYOUT_DIPOLE,
         connection_type=CONNECTION_POLAR
     )
+
+
+# ============================================================================
+# TEST / VERIFICATION
+# ============================================================================
+
+def verify_determinism(embedding: np.ndarray, runs: int = 3) -> bool:
+    """
+    Verify that embedding_to_voxel_grid is deterministic.
+    
+    Returns True if all runs produce identical output.
+    """
+    results = []
+    for _ in range(runs):
+        voxels = embedding_to_voxel_grid(embedding)
+        result = [(v.x, v.y, v.z, round(v.value, 6)) for v in voxels]
+        results.append(tuple(result))
+    
+    return len(set(results)) == 1
+
+
+if __name__ == "__main__":
+    # Quick sanity check
+    test_emb = np.random.randn(768).astype(np.float32)
+    
+    print("Testing determinism...")
+    assert verify_determinism(test_emb), "FAILED: Non-deterministic output!"
+    print("✓ Determinism verified")
+    
+    print("\nGenerating test voxels...")
+    voxels = embedding_to_voxel_grid(test_emb, threshold=0.3)
+    print(f"✓ Generated {len(voxels)} voxels (threshold=0.3)")
+    print(f"  Fill ratio: {len(voxels)/768:.1%}")
+    
+    print("\nCreating test molecule...")
+    mol = create_rule_molecule(
+        rule_id="test_rule",
+        question="Is this a test?",
+        pos_embedding=test_emb,
+        neg_embedding=np.random.randn(768).astype(np.float32),
+        pos_text="positive phrases",
+        neg_text="negative phrases"
+    )
+    print(f"✓ Created molecule with {len(mol.chunks)} chunks")
+    
+    print("\nAll tests passed!")

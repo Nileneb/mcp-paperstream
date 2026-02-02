@@ -765,6 +765,51 @@ async def api_get_active_rules(request: Request) -> JSONResponse:
     return JSONResponse({"rules": rules_data, "count": len(rules_data)})
 
 
+async def api_get_active_rule(request: Request) -> JSONResponse:
+    """
+    GET /api/rule/active - DATAMODEL.md contract endpoint
+    
+    Returns the currently active validation rule for the game.
+    Unity shows this as the reference shape at the top of the UI.
+    
+    Returns:
+    {
+        "rule": { /* Rule Molecule with chunks */ },
+        "threshold": 0.7,
+        "question": "Is this a Randomized Controlled Trial?"
+    }
+    """
+    from .api.rule_handler import get_rule_handler
+    from .db import get_db
+    
+    handler = get_rule_handler()
+    db = get_db()
+    
+    # Get first active rule (in production, this would be configurable)
+    rules = db.get_active_rules()
+    
+    if not rules:
+        return JSONResponse({
+            "error": "No active rules configured",
+            "message": "Call load_default_rules() to initialize rules"
+        }, status_code=404)
+    
+    # Get the first rule as the "active" game rule
+    active_rule = rules[0]
+    
+    # Get full molecule representation with chunks
+    rule_chunks = handler.get_rule_chunks(active_rule.rule_id)
+    
+    if not rule_chunks:
+        return JSONResponse({"error": "Rule has no chunks"}, status_code=500)
+    
+    return JSONResponse({
+        "rule": rule_chunks,
+        "threshold": active_rule.threshold,
+        "question": active_rule.question
+    })
+
+
 async def api_get_rule_chunks(request: Request) -> JSONResponse:
     """
     GET /api/rules/{rule_id}/chunks - Get rule as molecule chunks
@@ -1043,6 +1088,178 @@ async def api_submit_job(request: Request) -> JSONResponse:
         logger.error(f"Error in api_submit_job: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
+async def api_job_response(request: Request) -> JSONResponse:
+    """
+    POST /api/jobs/{job_id}/response - DATAMODEL.md contract endpoint
+    
+    Submit player response for a validation job.
+    
+    Request body:
+    {
+        "device_id": "unity_client_xyz",
+        "action": "collect",        // or "skip"
+        "response_time_ms": 2340
+    }
+    
+    Returns:
+    {
+        "accepted": true,
+        "job_id": "...",
+        "action": "collect",
+        "points_earned": 10
+    }
+    """
+    try:
+        job_id = request.path_params.get("job_id")
+        if not job_id:
+            return JSONResponse({"error": "job_id required"}, status_code=400)
+        
+        body = await request.json()
+        device_id = body.get("device_id")
+        action = body.get("action")  # "collect" or "skip"
+        response_time_ms = body.get("response_time_ms", 0)
+        
+        if not device_id or not action:
+            return JSONResponse({"error": "device_id and action required"}, status_code=400)
+        
+        if action not in ["collect", "skip"]:
+            return JSONResponse({"error": "action must be 'collect' or 'skip'"}, status_code=400)
+        
+        from .api.job_handler import get_job_handler
+        from .db import get_db
+        
+        handler = get_job_handler()
+        db = get_db()
+        
+        # For now, job_id is treated as paper_id (1 job = 1 paper)
+        # In future, this could be a separate job tracking system
+        paper_id = job_id.replace("job_", "") if job_id.startswith("job_") else job_id
+        
+        # Convert action to result format
+        # "collect" = matched/interested, "skip" = not matched/not interested
+        matched = (action == "collect")
+        
+        # Store result
+        result = handler.submit_results(
+            device_id=device_id,
+            paper_id=paper_id,
+            results=[{
+                "rule_id": "visual_match",  # Generic rule for visual matching
+                "matched": matched,
+                "confidence": 1.0 if matched else 0.0,
+                "response_time_ms": response_time_ms,
+            }]
+        )
+        
+        # Calculate points (faster response = more points)
+        base_points = 10 if matched else 5
+        speed_bonus = max(0, (10000 - response_time_ms) // 1000)  # Up to 10 bonus points
+        points_earned = base_points + speed_bonus
+        
+        # Emit SSE event
+        from .api.sse_stream import get_unity_sse_stream
+        sse = get_unity_sse_stream()
+        if sse.get_client_count() > 0:
+            await sse.emit_validation_result(paper_id, [{
+                "device_id": device_id,
+                "action": action,
+                "response_time_ms": response_time_ms
+            }])
+        
+        return JSONResponse({
+            "accepted": True,
+            "job_id": job_id,
+            "paper_id": paper_id,
+            "action": action,
+            "points_earned": points_earned,
+            "response_time_ms": response_time_ms
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in api_job_response: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def jobs_sse_handler(request: Request) -> StreamingResponse:
+    """
+    SSE /api/jobs/stream - DATAMODEL.md contract endpoint
+    
+    Streams validation jobs to Unity clients.
+    
+    Events:
+    {
+        "event": "job",
+        "data": {
+            "job_id": "job_abc123",
+            "paper_id": "paper_12345",
+            "chunk": { /* Single Chunk to validate */ },
+            "timeout_ms": 10000
+        }
+    }
+    """
+    client_id = request.query_params.get("client_id", f"jobs_{uuid.uuid4().hex[:8]}")
+    device_id = request.query_params.get("device_id", client_id)
+    
+    from .api.sse_stream import get_unity_sse_stream
+    from .api.job_handler import get_job_handler
+    
+    sse = get_unity_sse_stream()
+    handler = get_job_handler()
+    
+    async def job_event_stream():
+        # Send connection event
+        yield f"event: connected\ndata: {json.dumps({'client_id': client_id, 'device_id': device_id})}\n\n"
+        
+        job_interval = 5  # seconds between job checks
+        last_job_time = 0
+        
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Check for new job periodically
+                if current_time - last_job_time >= job_interval:
+                    job_result = handler.get_next_job(device_id)
+                    
+                    if job_result.get("status") == "assigned":
+                        job_data = job_result.get("job", {})
+                        
+                        # Format as DATAMODEL.md contract
+                        event_data = {
+                            "job_id": f"job_{job_data.get('paper_id', 'unknown')}",
+                            "paper_id": job_data.get("paper_id"),
+                            "title": job_data.get("title"),
+                            "chunk": job_data.get("chunks", [{}])[0] if job_data.get("chunks") else None,
+                            "timeout_ms": job_data.get("expires_in_seconds", 600) * 1000,
+                        }
+                        
+                        yield f"event: job\ndata: {json.dumps(event_data)}\n\n"
+                    
+                    last_job_time = current_time
+                
+                # Send heartbeat every 30 seconds
+                await asyncio.sleep(1)
+                if int(current_time) % 30 == 0:
+                    yield f"event: heartbeat\ndata: {json.dumps({'ts': int(current_time * 1000)})}\n\n"
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in jobs SSE stream: {e}")
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                break
+    
+    return StreamingResponse(
+        job_event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
 # =========================
 # Device API
 # =========================
@@ -1249,10 +1466,15 @@ api_routes = [
     Route("/api/rules", api_list_rules, methods=["GET"]),
     Route("/api/rule-chunks", api_get_rule_chunks, methods=["GET"]),  # Alternative with ?rule_id=
     
+    # DATAMODEL.md contract: GET /api/rule/active (singular - active game rule)
+    Route("/api/rule/active", api_get_active_rule, methods=["GET"]),
+    
     # Jobs API - 1 Job = 1 Paper (ROUND ROBIN)
     Route("/api/jobs/stats", api_get_job_stats, methods=["GET"]),  # Queue stats & round-robin info
     Route("/api/jobs/next", api_get_next_job, methods=["GET"]),
     Route("/api/jobs/submit", api_submit_job, methods=["POST"]),
+    Route("/api/jobs/stream", jobs_sse_handler, methods=["GET"]),  # DATAMODEL.md: SSE job stream
+    Route("/api/jobs/{job_id}/response", api_job_response, methods=["POST"]),  # DATAMODEL.md: job response
     Route("/api/validation/submit", api_submit_job, methods=["POST"]),  # Alias for Unity compatibility
     
     # Devices
