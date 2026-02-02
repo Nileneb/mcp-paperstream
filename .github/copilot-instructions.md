@@ -1,198 +1,178 @@
 # Copilot Instructions for mcp-paperstream
 
 ## Project Overview
-**mcp-paperstream** is a distributed MCP server for scientific paper review combining:
-1. **BERTScore computation** distributed across IoT edge devices (ESP32, RPi, smartphones)
-2. **Stable Diffusion integration** for scientific visualizations
-3. **BiomedCLIP validation** for text-image semantic alignment
 
+**mcp-paperstream** is a distributed paper validation system where:
+1. **BioBERT** generates 768-dim embeddings for scientific papers
+2. **Embeddings become visual voxel structures** (8×8×12 grids)
+3. **Humans play a game** comparing paper voxels to rule voxels
+4. **Consensus validation** aggregates player decisions
 
-# Core Data Model (CRITICAL!)
+**Core insight:** Humans visually pattern-match instead of expensive LLM calls.
 
-## Hierarchy: Text → Embedding → Chunk → Voxels
+---
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  TEXT (Papers & Rules)                                          │
-│  - Papers: PDF sections (abstract, methods, results, etc.)      │
-│  - Rules: Positive/negative phrase lists                        │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼ BioBERT (768-dim)
-┌─────────────────────────────────────────────────────────────────┐
-│  EMBEDDING (768 dimensions)                                      │
-│  - Semantic vector representation                                │
-│  - Base64 encoded for transport: embedding_b64                   │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼ Container
-┌─────────────────────────────────────────────────────────────────┐
-│  CHUNK (Unity: INVISIBLE cube at position)                       │
-│  - Container for embedding + voxels                              │
-│  - Paper: N chunks (one per section)                             │
-│  - Rule: 2 chunks (positive=green, negative=red)                 │
-│  - Position defines local origin (0,0,0) for voxels inside       │
-│  - connects_to: Array of chunk_ids for wire/lane connections     │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼ Reshape 768 → 8x8x12
-┌─────────────────────────────────────────────────────────────────┐
-│  VOXELS (Unity: VISIBLE cubes for interaction)                   │
-│  - 8x8x12 grid = 768 values (matches embedding dim)              │
-│  - Each voxel = one embedding dimension visualized               │
-│  - Rendered relative to chunk's position                         │
-│  - voxels: {grid_size: [8,8,12], voxels: [[x,y,z,value],...]}   │
-└─────────────────────────────────────────────────────────────────┘
-```
+## DATAMODEL.md Contract (CRITICAL!)
 
-## Unified Chunk Structure (BOTH Papers AND Rules)
-```json
-{
-  "chunk_id": 0,
-  "chunk_type": "abstract" | "methods" | "positive" | "negative",
-  "text_preview": "First 500 chars...",
-  "embedding_b64": "base64-encoded-768-float32",
-  "voxels": {
-    "grid_size": [8, 8, 12],
-    "voxels": [[x, y, z, value], ...],
-    "voxel_count": 384,
-    "fill_ratio": 0.5
-  },
-  "color": {"r": 0.2, "g": 0.9, "b": 0.3},
-  "position": {"x": 0.0, "y": 0.0, "z": 0.0},
-  "connects_to": [1, 2]
-}
-```
+The `DATAMODEL.md` file is the **single source of truth** shared between Python backend and Unity frontend.
 
-## Wires/Lanes (WICHTIG!)
-**Wires verbinden VOXELS innerhalb eines Chunks - NICHT Chunks untereinander!**
-
-- Wires = Linien zwischen Embedding-Cubes (Voxels) innerhalb eines Chunks
-- Zeigen Zusammenhang der 768 Embedding-Dimensionen
-- Helfen beim visuellen Zuordnen welche Cubes zum gleichen Embedding gehören
-- Ein Chunk kann mehrere Embeddings enthalten → Wires gruppieren zugehörige Voxels
+### Hierarchy: Text → Embedding → Chunk → Voxels → Molecule
 
 ```
-Chunk (unsichtbar)
-├── Voxel[0,0,0] ──Wire── Voxel[1,0,0] ──Wire── Voxel[2,0,0]
-├── Voxel[0,1,0] ──Wire── Voxel[1,1,0] ──Wire── Voxel[2,1,0]
-└── ... (8x8x12 Voxels verbunden durch Wires)
+TEXT (Paper/Rule)
+    ↓ BioBERT (768-dim)
+EMBEDDING (float32 array)
+    ↓ enhance_visual_contrast() + threshold
+VOXEL GRID (8×8×12 = 768 positions)
+    ↓ package with metadata
+CHUNK (container: embedding + voxels + color + position)
+    ↓ collect related chunks
+MOLECULE (Paper = chain of section chunks, Rule = dipole of pos/neg chunks)
 ```
 
-## Unity Rendering Flow
-1. **Spawn Chunk** = invisible cube at `position` (container)
-2. **Spawn Voxels** = visible cubes at `chunk.position + voxel[x,y,z]`
-3. **Draw Wires** = LineRenderer zwischen Voxels INNERHALB des Chunks (zeigen Embedding-Struktur)
+### Voxel Mapping Formula
+```python
+# Embedding index → 3D position
+i = x + y*8 + z*64
+# where x ∈ [0,7], y ∈ [0,7], z ∈ [0,11]
 
+# Iteration order (MUST match C#!)
+for z in range(12):
+    for y in range(8):
+        for x in range(8):
+            i = x + y*8 + z*64
+```
 
-## Architecture Essentials
+### Visual Contrast Enhancement
+```python
+def enhance_visual_contrast(embedding):
+    centered = emb - mean(emb)
+    amplified = tanh(centered * 2.0)
+    return (amplified + 1.0) / 2.0
+```
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         PAPER-VALIDATION-PIPELINE                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  1. N8N-AGENT (paper-search-mcp)                                         │
-│     └── Sucht Paper → Lädt PDF → Speichert in /shared/papers             │
-│                                                                          │
-│  2. PAPERSTREAM-MCP (Docker-Server)                                      │
-│     ├── Erstellt ERST alle Rule-Embeddings (= Preview-Container)         │
-│     ├── Normalisiert PDF → Extrahiert Sections                          │
-│     ├── Erzeugt Paper-Embeddings (= Job-Embeddings)                     │
-│     ├── Mappt Embeddings auf 8×8×12-Voxel-Grid                          │
-│     └── Sendet Jobs (Embeddings + Rules) an Android-Devices             │
-│                                                                          │
-│  3. ANDROID-DEVICES                                                      │
-│     ├── Empfangen: Paper-Embeddings (Base64) + Rule-Embeddings (Base64)  │
-│     ├── Vergleichen per Cosine-Similarity                               │
-│     └── Senden zurück: "Paper X enthält Rule 1,3,5 in Section Y,Z"      │
-│                                                                          │
-│  4. UNITY-GAME                                                           │
-│     ├── Spawnt Voxel-Figuren aus validiertem Embedding-Grid             │
-│     ├── RulePreview zeigt Ziel-Figur als 3D-Referenz                    │
-│     └── Spieler sammelt passende Voxels → Punkte                        │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+**This function MUST produce identical results in Python and C#!**
 
+---
 
-
-WICHTIG: der server läuft mit Docker compose !!!!!!
-Ablauf pro Paper
-
-    load_default_rules() → Lädt 17 vordefinierte Rule-Embeddings
-    search_*() + download_*() → Paper finden und PDF speichern
-    submit_paper() + link_paper_pdf() → Paper registrieren
-    process_paper() → PDF→Sections→Embeddings→Voxels→Jobs
-    Android empfängt Jobs → Vergleicht Paper- mit Rule-Embeddings
-    Android sendet Ergebnis → "Rule X gefunden in Section Y"
-    Unity spawnt validierte Figuren → Spieler interagiert
-
-
+## Key Files
 
 ```
 src/paperstream/
-├── server.py           # MCP server - task distribution, SSE, job management
-├── config.yaml         # Central configuration (paths, ports, IoT settings)
-├── handlers/
-│   ├── biobert_handler.py    # BioBERT tokenization & embeddings
-│   ├── biomedclip_handler.py # Text-image similarity (requires open_clip)
-│   ├── sd_api_client.py      # AUTOMATIC1111 SD WebUI API client
-│   └── download_model.py     # Model download utility
-└── prompts/
-    ├── scientific_templates.py # SD prompt templates (cell_diagram, molecular, etc.)
-    └── term_mappings.json      # Scientific terms → visual descriptors
+├── core/
+│   └── data_model.py      # ⭐ DATAMODEL.md implementation
+├── server.py              # MCP server with FastAPI
+├── server_integrated.py   # Full server with all endpoints
+├── processing/
+│   └── pdf_voxelizer.py   # PDF → sections → embeddings → voxels
+└── handlers/
+    └── biobert_handler.py # BioBERT tokenization & embeddings
+
+tests/
+├── test_visual_embeddings.py  # Generates test data for Unity
+└── test_data/                 # Sample JSON files
 ```
 
-### Coordinator-Worker Pattern
-The server uses SSE for downstream task distribution and REST for result submission:
-- **Coordinator** (`server.py`): Manages jobs, distributes tasks, aggregates embeddings
-- **IoT Workers**: Compute TinyBERT layer subsets based on device capability
-- Task flow: `queued → assigned → (timeout → retry) | done`
+---
 
-### Device Capability Mapping
-```python
-LOW    (ESP32):     [0]        # Only embedding layer
-MEDIUM (RPi4):      [0,1,2]    # First 3 layers
-HIGH   (modern):    [0-5]      # All 6 TinyBERT layers
+## API Endpoints (Game Integration)
+
+### GET /api/rule/active
+Returns the currently active Rule as a Molecule for display in Unity.
+
+```json
+{
+  "rule": { /* Molecule object */ },
+  "threshold": 0.7,
+  "question": "Is this a Randomized Controlled Trial?"
+}
 ```
 
-## Configuration
-All settings in `config.yaml`. Key sections:
-- `server`: Host, port, SSE/result paths
-- `models.biobert`: Model path and HuggingFace name
-- `models.biomedclip`: BiomedCLIP config (optional)
+### SSE /api/jobs/stream
+Server-Sent Events stream delivering paper chunks for validation.
 
-- `iot`: TTL, inflight limits, layer count
-
-Environment variables override config: `FASTMCP_HOST`, `FASTMCP_PORT`, `BERTSCORE_HMAC`, etc.
-
-## Handler Usage Patterns
-
-### BioBERT Handler
-```python
-from paperstream.handlers import get_biobert_handler
-handler = get_biobert_handler()
-tokens, token_ids = handler.tokenize("scientific text")
-embedding = handler.embed("text", layer_range=(0, 3))  # Partial layers for IoT
+```
+event: job
+data: {"job_id": "...", "paper_id": "...", "chunk": {...}, "timeout_ms": 30000}
 ```
 
+### POST /api/jobs/{job_id}/response
+Player submits their decision.
 
+```json
+{
+  "job_id": "abc123",
+  "device_id": "player-device-id",
+  "action": "collect",  // or "skip"
+  "response_time_ms": 1234
+}
+```
 
-## Development Workflow
+---
+
+## Game Flow
+
+1. Server loads Rule → creates pos/neg Molecule with voxel grids
+2. Unity displays Rule shapes as 3D reference
+3. Papers get processed → sections become Chunks with voxels
+4. Server streams paper Chunks to Unity as "jobs"
+5. Player sees paper voxels, compares to Rule reference
+6. Player collects (= YES vote) or skips (= NO vote)
+7. Server aggregates consensus from multiple players
+8. Paper gets classified when threshold reached
+
+**NO client-side cosine similarity! Humans do the visual matching.**
+
+---
+
+## Development
 
 ### Setup
 ```bash
-uv pip install transformers torch open_clip_torch pillow httpx pyyaml
-python -m paperstream.handlers.download_model all  # Download models
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Generate Test Data
+```bash
+PYTHONPATH=src python tests/test_visual_embeddings.py -o tests/test_data
+# Add --no-biobert for mock embeddings (faster, no model download)
 ```
 
 ### Run Server
 ```bash
-uvicorn src.paperstream.server:mcp --host 0.0.0.0 --port 8089
+docker-compose up
+# or directly:
+uvicorn src.paperstream.server_integrated:app --host 0.0.0.0 --port 8089
 ```
 
-### Test Flow
-1. `register_iot_client(client_id="test", capability="high")`
-2. `bertscore_compute(reference="...", candidate="...", distributed=True)`
-3. `bertscore_status(job_id)` - poll until completed
+---
 
+## Code Conventions
 
+- **Determinism is critical:** `embedding_to_voxel_grid()` must produce identical output every time
+- **German comments OK:** Team is German-speaking
+- **Type hints:** Use them for all public functions
+- **Tests:** Run `pytest tests/` before committing
+
+---
+
+## Common Tasks
+
+### Adding a new Rule type
+1. Define positive/negative phrase lists
+2. Generate embeddings with BioBERT
+3. Create Molecule via `create_rule_molecule()`
+4. Test voxel output visually in Unity
+
+### Changing the voxel transformation
+1. Update `enhance_visual_contrast()` in `data_model.py`
+2. Update matching function in Unity `EmbeddingToVoxel.cs`
+3. Verify with `test_visual_embeddings.py --no-biobert`
+4. Compare voxel counts between Python and C#
+
+### Debugging job flow
+1. Check `/api/jobs/stream` SSE connection in browser
+2. Monitor server logs for job assignment
+3. Verify device registration at `/api/devices`
