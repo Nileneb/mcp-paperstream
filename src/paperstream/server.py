@@ -12,7 +12,7 @@ Architektur:
 """
 
 from __future__ import annotations
-import os, json, time, asyncio, hmac, hashlib
+import os, json, time, asyncio, hmac, hashlib, secrets
 from typing import Any, Dict, List, Optional, Tuple, cast
 from enum import Enum
 from pathlib import Path
@@ -899,23 +899,101 @@ async def sse_route(request: Request):
 # =========================
 from starlette.responses import JSONResponse
 
-# Lazy import auth handler
-_auth_handler = None
+# Lazy imports
+_unity_auth = None
+_moltbook_auth = None
 
-def _get_auth_handler():
-    global _auth_handler
-    if _auth_handler is None:
+def _get_unity_auth():
+    global _unity_auth
+    if _unity_auth is None:
+        from .api import unity_auth_handler
+        _unity_auth = unity_auth_handler
+    return _unity_auth
+
+def _get_moltbook_auth():
+    global _moltbook_auth
+    if _moltbook_auth is None:
         from .api import auth_handler
-        _auth_handler = auth_handler
-    return _auth_handler
+        _moltbook_auth = auth_handler
+    return _moltbook_auth
+
+
+# === Unity Authentication (für Spieler) ===
+
+@mcp.custom_route("/api/auth/unity", methods=["POST"])
+async def auth_unity_route(request: Request):
+    """
+    Authentifiziert via Unity idToken (JWT).
+    Header: Authorization: Bearer <idToken>
+    """
+    auth = _get_unity_auth()
+    
+    # Token aus Header extrahieren
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"success": False, "error": "Missing or invalid Authorization header"},
+            status_code=400
+        )
+    
+    id_token = auth_header.replace("Bearer ", "")
+    
+    # Token verifizieren
+    player = await auth.verify_unity_token(id_token)
+    
+    if not player:
+        return JSONResponse(
+            {"success": False, "error": "Invalid or expired Unity token"},
+            status_code=401
+        )
+    
+    # Session erstellen
+    session = auth.create_session(player)
+    
+    return JSONResponse({
+        "success": True,
+        "session_token": session.session_id,
+        "player_id": session.player_id,
+        "unity_player_id": session.unity_player_id,
+        "expires_in": int(session.expires_at - session.created_at)
+    })
+
+
+@mcp.custom_route("/api/auth/anonymous", methods=["POST"])
+async def auth_anonymous_route(request: Request):
+    """
+    Anonyme Auth für lokales Testing (ohne Unity).
+    Body: {"device_id": "xxx"}
+    """
+    auth = _get_unity_auth()
+    
+    try:
+        body = await request.json()
+    except:
+        body = {}
+    
+    device_id = body.get("device_id", secrets.token_hex(8))
+    
+    session = auth.create_anonymous_session(device_id)
+    
+    return JSONResponse({
+        "success": True,
+        "session_token": session.session_id,
+        "player_id": session.player_id,
+        "expires_in": 86400,
+        "anonymous": True
+    })
+
+
+# === Moltbook Authentication (für AI Agents) ===
 
 @mcp.custom_route("/api/auth/moltbook", methods=["POST"])
 async def auth_moltbook_route(request: Request):
     """
-    Authentifiziert via Moltbook Identity Token.
+    Authentifiziert via Moltbook Identity Token (für AI Agents).
     Header: X-Moltbook-Identity: <token>
     """
-    auth = _get_auth_handler()
+    auth = _get_moltbook_auth()
     
     identity_token = request.headers.get("X-Moltbook-Identity", "")
     
@@ -925,7 +1003,6 @@ async def auth_moltbook_route(request: Request):
             status_code=400
         )
     
-    # Token bei Moltbook verifizieren
     agent = await auth.verify_moltbook_token(identity_token)
     
     if not agent:
@@ -934,7 +1011,6 @@ async def auth_moltbook_route(request: Request):
             status_code=401
         )
     
-    # Session erstellen
     session = auth.create_session(agent)
     
     return JSONResponse({
@@ -947,13 +1023,15 @@ async def auth_moltbook_route(request: Request):
     })
 
 
+# === Legacy Dev Auth ===
+
 @mcp.custom_route("/api/auth/dev", methods=["POST"])
 async def auth_dev_route(request: Request):
     """
-    Dev-Auth ohne Moltbook (NUR FÜR ENTWICKLUNG!).
+    Dev-Auth ohne externe Verification (NUR FÜR ENTWICKLUNG!).
     Body: {"device_id": "xxx", "name": "TestPlayer"}
     """
-    auth = _get_auth_handler()
+    auth = _get_moltbook_auth()
     
     try:
         body = await request.json()

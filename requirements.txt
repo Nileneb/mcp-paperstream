@@ -12,6 +12,9 @@ python-dotenv>=1.0.0
 httpx>=0.24.0
 aiohttp>=3.8.0
 
+# Authentication
+PyJWT>=2.8.0  # JWT verification for Unity Auth
+
 # BioBERT / Transformers (for embeddings)
 transformers>=4.35.0
 torch>=2.0.0
