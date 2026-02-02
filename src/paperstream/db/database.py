@@ -83,15 +83,27 @@ class DatabaseManager:
             return True
         
         migrations_dir = Path(__file__).parent / "migrations"
-        migration_file = migrations_dir / "001_create_tables.sql"
         
-        if not migration_file.exists():
-            logger.error(f"Migration file not found: {migration_file}")
-            return False
+        # Run all migrations in order
+        migration_files = sorted(migrations_dir.glob("*.sql"))
         
         with self.get_connection() as conn:
-            with open(migration_file, "r") as f:
-                conn.executescript(f.read())
+            for migration_file in migration_files:
+                logger.info(f"Running migration: {migration_file.name}")
+                try:
+                    with open(migration_file, "r") as f:
+                        # Execute line by line to handle ALTER TABLE errors gracefully
+                        for statement in f.read().split(';'):
+                            statement = statement.strip()
+                            if statement and not statement.startswith('--'):
+                                try:
+                                    conn.execute(statement)
+                                except sqlite3.OperationalError as e:
+                                    # Ignore "duplicate column" errors for ALTER TABLE
+                                    if "duplicate column" not in str(e).lower():
+                                        logger.warning(f"Migration statement failed: {e}")
+                except Exception as e:
+                    logger.error(f"Migration {migration_file.name} failed: {e}")
         
         self._initialized = True
         logger.info(f"Database initialized at {self.db_path}")
@@ -243,12 +255,20 @@ class DatabaseManager:
         return None
     
     def get_active_rules(self) -> List[Rule]:
-        """Get all active rules"""
+        """Get ALL rules - Unity needs all rules to validate papers!
+        
+        Note: Returns ALL rules regardless of is_active flag.
+        We want to check every paper against EVERY rule.
+        """
         with self.get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM rules WHERE is_active = 1 ORDER BY created_at"
+                "SELECT * FROM rules ORDER BY created_at"
             ).fetchall()
             return [self._row_to_rule(r) for r in rows]
+    
+    def get_all_rules(self) -> List[Rule]:
+        """Alias for get_active_rules - returns ALL rules"""
+        return self.get_active_rules()
     
     def update_rule(self, rule: Rule) -> bool:
         """Update an existing rule"""

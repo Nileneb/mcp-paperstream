@@ -228,6 +228,18 @@ class UnitySSEStream:
             "timestamp": datetime.now().isoformat()
         })
     
+    async def emit_validation_result(
+        self,
+        paper_id: str,
+        results: list
+    ):
+        """Emit when a device submits validation results"""
+        await self.broadcast("validation_result", {
+            "paper_id": paper_id,
+            "results": results,
+            "timestamp": datetime.now().isoformat()
+        })
+    
     def get_client_count(self) -> int:
         """Get number of connected clients"""
         return len(self._subscribers)

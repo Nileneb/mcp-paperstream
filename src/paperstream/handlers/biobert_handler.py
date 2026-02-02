@@ -47,6 +47,11 @@ class BioBERTHandler:
                 self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         return self._tokenizer
     
+    def _get_text_hash(self, text: str) -> str:
+        """Generate hash for text to use as cache key"""
+        import hashlib
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
+    
     @property
     def model(self):
         """Lazy-load Modell"""
@@ -82,7 +87,9 @@ class BioBERTHandler:
     def embed(
         self, 
         text: str, 
-        layer_range: Optional[Tuple[int, int]] = None
+        layer_range: Optional[Tuple[int, int]] = None,
+        use_cache: bool = True,
+        cache_id: Optional[str] = None
     ) -> List[float]:
         """
         Berechnet Embeddings für Text.
@@ -90,10 +97,23 @@ class BioBERTHandler:
         Args:
             text: Eingabetext
             layer_range: Optional (start, end) für partielle Layer-Ausgabe
+            use_cache: Check Qdrant cache first (default True)
+            cache_id: Optional ID for caching (default: text hash)
             
         Returns:
             Embedding-Vektor als Liste von Floats
         """
+        # Try Qdrant cache first
+        if use_cache:
+            try:
+                from ..db.vector_store import get_paper_embedding
+                lookup_id = cache_id or f"text_{self._get_text_hash(text)}"
+                cached = get_paper_embedding(lookup_id)
+                if cached:
+                    return cached
+            except Exception:
+                pass  # Qdrant not available, compute normally
+        
         with torch.no_grad():
             encoded = self.tokenizer(
                 text, 

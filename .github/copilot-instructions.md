@@ -6,12 +6,128 @@
 2. **Stable Diffusion integration** for scientific visualizations
 3. **BiomedCLIP validation** for text-image semantic alignment
 
+
+# Core Data Model (CRITICAL!)
+
+## Hierarchy: Text → Embedding → Chunk → Voxels
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TEXT (Papers & Rules)                                          │
+│  - Papers: PDF sections (abstract, methods, results, etc.)      │
+│  - Rules: Positive/negative phrase lists                        │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼ BioBERT (768-dim)
+┌─────────────────────────────────────────────────────────────────┐
+│  EMBEDDING (768 dimensions)                                      │
+│  - Semantic vector representation                                │
+│  - Base64 encoded for transport: embedding_b64                   │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼ Container
+┌─────────────────────────────────────────────────────────────────┐
+│  CHUNK (Unity: INVISIBLE cube at position)                       │
+│  - Container for embedding + voxels                              │
+│  - Paper: N chunks (one per section)                             │
+│  - Rule: 2 chunks (positive=green, negative=red)                 │
+│  - Position defines local origin (0,0,0) for voxels inside       │
+│  - connects_to: Array of chunk_ids for wire/lane connections     │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼ Reshape 768 → 8x8x12
+┌─────────────────────────────────────────────────────────────────┐
+│  VOXELS (Unity: VISIBLE cubes for interaction)                   │
+│  - 8x8x12 grid = 768 values (matches embedding dim)              │
+│  - Each voxel = one embedding dimension visualized               │
+│  - Rendered relative to chunk's position                         │
+│  - voxels: {grid_size: [8,8,12], voxels: [[x,y,z,value],...]}   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Unified Chunk Structure (BOTH Papers AND Rules)
+```json
+{
+  "chunk_id": 0,
+  "chunk_type": "abstract" | "methods" | "positive" | "negative",
+  "text_preview": "First 500 chars...",
+  "embedding_b64": "base64-encoded-768-float32",
+  "voxels": {
+    "grid_size": [8, 8, 12],
+    "voxels": [[x, y, z, value], ...],
+    "voxel_count": 384,
+    "fill_ratio": 0.5
+  },
+  "color": {"r": 0.2, "g": 0.9, "b": 0.3},
+  "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+  "connects_to": [1, 2]
+}
+```
+
+## Wires/Lanes (WICHTIG!)
+**Wires verbinden VOXELS innerhalb eines Chunks - NICHT Chunks untereinander!**
+
+- Wires = Linien zwischen Embedding-Cubes (Voxels) innerhalb eines Chunks
+- Zeigen Zusammenhang der 768 Embedding-Dimensionen
+- Helfen beim visuellen Zuordnen welche Cubes zum gleichen Embedding gehören
+- Ein Chunk kann mehrere Embeddings enthalten → Wires gruppieren zugehörige Voxels
+
+```
+Chunk (unsichtbar)
+├── Voxel[0,0,0] ──Wire── Voxel[1,0,0] ──Wire── Voxel[2,0,0]
+├── Voxel[0,1,0] ──Wire── Voxel[1,1,0] ──Wire── Voxel[2,1,0]
+└── ... (8x8x12 Voxels verbunden durch Wires)
+```
+
+## Unity Rendering Flow
+1. **Spawn Chunk** = invisible cube at `position` (container)
+2. **Spawn Voxels** = visible cubes at `chunk.position + voxel[x,y,z]`
+3. **Draw Wires** = LineRenderer zwischen Voxels INNERHALB des Chunks (zeigen Embedding-Struktur)
+
+
 ## Architecture Essentials
-WICHTIG!!!! PRÜFE IMMER OB DAS CONDA ENVIROMENT AKTIVIERT IST MIT NEM PYTHON 3.12 UND .VENV!!!!!!!
-CONDA ENVIROMENT: "paperstream"
-PYTHON VERSION: 3.12
-PYTHON ENV: ".venv"
-### Core Components
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         PAPER-VALIDATION-PIPELINE                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  1. N8N-AGENT (paper-search-mcp)                                         │
+│     └── Sucht Paper → Lädt PDF → Speichert in /shared/papers             │
+│                                                                          │
+│  2. PAPERSTREAM-MCP (Docker-Server)                                      │
+│     ├── Erstellt ERST alle Rule-Embeddings (= Preview-Container)         │
+│     ├── Normalisiert PDF → Extrahiert Sections                          │
+│     ├── Erzeugt Paper-Embeddings (= Job-Embeddings)                     │
+│     ├── Mappt Embeddings auf 8×8×12-Voxel-Grid                          │
+│     └── Sendet Jobs (Embeddings + Rules) an Android-Devices             │
+│                                                                          │
+│  3. ANDROID-DEVICES                                                      │
+│     ├── Empfangen: Paper-Embeddings (Base64) + Rule-Embeddings (Base64)  │
+│     ├── Vergleichen per Cosine-Similarity                               │
+│     └── Senden zurück: "Paper X enthält Rule 1,3,5 in Section Y,Z"      │
+│                                                                          │
+│  4. UNITY-GAME                                                           │
+│     ├── Spawnt Voxel-Figuren aus validiertem Embedding-Grid             │
+│     ├── RulePreview zeigt Ziel-Figur als 3D-Referenz                    │
+│     └── Spieler sammelt passende Voxels → Punkte                        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+
+
+WICHTIG: der server läuft mit Docker compose !!!!!!
+Ablauf pro Paper
+
+    load_default_rules() → Lädt 17 vordefinierte Rule-Embeddings
+    search_*() + download_*() → Paper finden und PDF speichern
+    submit_paper() + link_paper_pdf() → Paper registrieren
+    process_paper() → PDF→Sections→Embeddings→Voxels→Jobs
+    Android empfängt Jobs → Vergleicht Paper- mit Rule-Embeddings
+    Android sendet Ergebnis → "Rule X gefunden in Section Y"
+    Unity spawnt validierte Figuren → Spieler interagiert
+
+
+
 ```
 src/paperstream/
 ├── server.py           # MCP server - task distribution, SSE, job management
@@ -44,7 +160,7 @@ All settings in `config.yaml`. Key sections:
 - `server`: Host, port, SSE/result paths
 - `models.biobert`: Model path and HuggingFace name
 - `models.biomedclip`: BiomedCLIP config (optional)
-- `stable_diffusion`: API URL, timeout
+
 - `iot`: TTL, inflight limits, layer count
 
 Environment variables override config: `FASTMCP_HOST`, `FASTMCP_PORT`, `BERTSCORE_HMAC`, etc.
@@ -59,32 +175,7 @@ tokens, token_ids = handler.tokenize("scientific text")
 embedding = handler.embed("text", layer_range=(0, 3))  # Partial layers for IoT
 ```
 
-### SD API Client
-```python
-from paperstream.handlers import get_sd_client
-client = get_sd_client()
-result = await client.txt2img(prompt="cell diagram of neuron", steps=20)
-# result["images"][0] is PIL.Image
-```
 
-### Prompt Templates
-```python
-from paperstream.prompts import get_template, get_visual_terms
-prompt = get_template("cell_diagram", {"cell_type": "neuron"})
-terms = get_visual_terms("neuron")  # Returns synonyms, visual_descriptors
-```
-
-## Critical State Dictionaries
-Three dicts in `server.py` must stay synchronized:
-- `clients`: Device metadata, latency stats
-- `clients_inflight`: Active task count (max 1 for IoT)
-- `clients_queues`: Async queues for SSE delivery
-
-## Common Pitfalls
-- **Task timeout**: Expired tasks auto-reassign but need `bertscore_status()` call for aggregation
-- **SSE cleanup**: Disconnected clients stay registered; stale entries in `get_system_stats()`
-- **Model loading**: Handlers lazy-load models; first call is slow
-- **open_clip optional**: BiomedCLIP requires `pip install open_clip_torch`
 
 ## Development Workflow
 
@@ -104,13 +195,4 @@ uvicorn src.paperstream.server:mcp --host 0.0.0.0 --port 8089
 2. `bertscore_compute(reference="...", candidate="...", distributed=True)`
 3. `bertscore_status(job_id)` - poll until completed
 
-## File Quick Reference
-| File | Purpose |
-|------|---------|
-| [server.py](src/paperstream/server.py) | MCP tools, SSE endpoint, task distribution |
-| [config.yaml](src/paperstream/config.yaml) | All configurable settings |
-| [biobert_handler.py](src/paperstream/handlers/biobert_handler.py) | `BioBERTHandler.tokenize()`, `.embed()` |
-| [sd_api_client.py](src/paperstream/handlers/sd_api_client.py) | `StableDiffusionClient.txt2img()` |
-| [scientific_templates.py](src/paperstream/prompts/scientific_templates.py) | `TEMPLATES` dict, `get_template()` |
-| [term_mappings.json](src/paperstream/prompts/term_mappings.json) | Scientific vocabulary mappings |
 

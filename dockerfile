@@ -33,6 +33,7 @@ RUN pip install --upgrade pip \
     aiosqlite \
     pymupdf \
     numpy \
+    qdrant-client \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Copy remaining project files

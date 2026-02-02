@@ -148,9 +148,16 @@ class PaperProcessor:
             
             # 3. Generate embeddings and create section records
             section_records = []
+            all_embeddings = []  # Collect for paper-level embedding
+            
             for section in sections:
-                # Generate embedding
-                embedding = self.biobert.embed(section.text[:512])  # First 512 chars
+                # Generate embedding with cache ID
+                section_cache_id = f"{paper_id}_{section.name}"
+                embedding = self.biobert.embed(
+                    section.text[:512],  # First 512 chars
+                    cache_id=section_cache_id
+                )
+                all_embeddings.append(embedding)
                 
                 # Convert to voxel grid
                 voxel_grid = self._embedding_to_voxels(embedding)
@@ -183,7 +190,26 @@ class PaperProcessor:
                     (paper_id,)
                 )
             
-            # 5. Create validation jobs for this paper
+            # 5. Store paper embedding in Qdrant
+            if all_embeddings:
+                try:
+                    from ..db.vector_store import upsert_paper_embedding
+                    # Average all section embeddings for paper-level embedding
+                    paper_embedding = np.mean(all_embeddings, axis=0).tolist()
+                    upsert_paper_embedding(
+                        paper_id=paper_id,
+                        embedding=paper_embedding,
+                        payload={
+                            "title": paper.title or "",
+                            "doi": paper.doi or "",
+                            "sections_count": len(sections)
+                        }
+                    )
+                    logger.info(f"Paper {paper_id} embedding stored in Qdrant")
+                except Exception as e:
+                    logger.warning(f"Failed to store paper in Qdrant: {e}")
+            
+            # 6. Create validation jobs for this paper
             jobs_result = self._create_validation_jobs(paper_id)
             jobs_created = jobs_result.get("jobs_created", 0)
             

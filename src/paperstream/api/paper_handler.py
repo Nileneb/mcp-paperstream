@@ -441,12 +441,137 @@ class PaperHandler:
                         self._download_queue.get(), 
                         timeout=5.0
                     )
-                    await self.download_pdf(paper_id)
+                    success = await self.download_pdf(paper_id)
+                    
+                    # Auto-process after successful download
+                    if success:
+                        try:
+                            from ..pipeline.paper_processor import get_paper_processor
+                            processor = get_paper_processor()
+                            result = await processor.process_paper(paper_id)
+                            if "error" in result:
+                                logger.error(f"Auto-process failed for {paper_id}: {result['error']}")
+                            else:
+                                logger.info(f"Auto-processed {paper_id}: {result.get('sections_created', 0)} sections")
+                        except Exception as e:
+                            logger.error(f"Auto-process error for {paper_id}: {e}")
+                            
                 except asyncio.TimeoutError:
                     # No more items, stop worker
                     break
         finally:
             self._processing = False
+    
+    def _find_pdf_for_paper(self, paper_id: str) -> Optional[Path]:
+        """
+        Try to find PDF for a paper in various locations.
+        
+        Searches:
+        1. Shared papers directory
+        2. Local download directory
+        
+        Tries various filename patterns to match paper_id.
+        """
+        # Clean paper_id for filename matching
+        clean_id = paper_id.replace("/", "_").replace(":", "_").replace("\\", "_")
+        
+        # Patterns to try
+        patterns = [
+            f"{paper_id}.pdf",
+            f"{clean_id}.pdf",
+            f"semantic_{paper_id}.pdf",
+            f"semantic_{clean_id}.pdf",
+        ]
+        
+        # Search directories
+        search_dirs = [SHARED_PAPERS_DIR, self.download_dir]
+        
+        for directory in search_dirs:
+            if not directory.exists():
+                continue
+            for pattern in patterns:
+                path = directory / pattern
+                if path.exists():
+                    return path
+            
+            # Also try partial match (paper_id contained in filename)
+            for file in directory.glob("*.pdf"):
+                if clean_id in file.name or paper_id in file.name:
+                    return file
+        
+        return None
+    
+    async def process_pending_papers(self) -> Dict[str, Any]:
+        """
+        Process all pending papers - finds PDFs and generates embeddings.
+        
+        1. Find pending papers without sections
+        2. Try to locate PDFs in shared directory
+        3. Link PDFs and process papers
+        
+        Returns:
+            Summary of processing results
+        """
+        from ..pipeline.paper_processor import get_paper_processor
+        processor = get_paper_processor()
+        
+        # Find ALL pending papers (not just those with pdf_local_path)
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT p.paper_id, p.pdf_local_path
+                FROM papers p
+                LEFT JOIN paper_sections s ON p.paper_id = s.paper_id
+                WHERE p.status IN ('pending', 'processing')
+                GROUP BY p.paper_id
+                HAVING COUNT(s.id) = 0
+            """)
+            papers_to_process = cursor.fetchall()
+        
+        results = {
+            "total": len(papers_to_process),
+            "processed": 0,
+            "failed": 0,
+            "linked": 0,
+            "details": []
+        }
+        
+        for paper_id, pdf_path in papers_to_process:
+            # Try to find PDF if not already linked
+            if not pdf_path or not Path(pdf_path).exists():
+                found_pdf = self._find_pdf_for_paper(paper_id)
+                if found_pdf:
+                    # Link the found PDF
+                    with self.db.get_connection() as conn:
+                        conn.execute(
+                            "UPDATE papers SET pdf_local_path = ? WHERE paper_id = ?",
+                            (str(found_pdf), paper_id)
+                        )
+                    pdf_path = str(found_pdf)
+                    results["linked"] += 1
+                    logger.info(f"Linked PDF for {paper_id}: {found_pdf}")
+                else:
+                    results["failed"] += 1
+                    results["details"].append({"paper_id": paper_id, "status": "no_pdf_found"})
+                    continue
+            
+            # Process the paper
+            try:
+                result = await processor.process_paper(paper_id)
+                if "error" in result:
+                    results["failed"] += 1
+                    results["details"].append({"paper_id": paper_id, "status": "error", "message": result["error"]})
+                else:
+                    results["processed"] += 1
+                    results["details"].append({
+                        "paper_id": paper_id, 
+                        "status": "success",
+                        "sections": result.get("sections_created", 0)
+                    })
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({"paper_id": paper_id, "status": "error", "message": str(e)})
+        
+        return results
 
 
 # Singleton instance

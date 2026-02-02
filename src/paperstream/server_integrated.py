@@ -255,29 +255,28 @@ async def get_system_stats() -> Dict[str, Any]:
     return db.get_stats()
 
 @mcp.tool()
-async def download_paper(paper_id: str) -> Dict[str, Any]:
+async def download_paper(paper_id: str, auto_process: bool = True) -> Dict[str, Any]:
     """
-    Download PDF for a paper that was previously submitted.
-    
-    MUST be called after submit_paper if a pdf_url was provided.
-    The PDF must be downloaded before process_paper can work.
+    Download PDF for a paper and optionally process it automatically.
     
     Args:
         paper_id: Paper ID to download PDF for
+        auto_process: If True (default), automatically process after download
+                     (extract sections, generate BioBERT embeddings)
     
     Returns:
-        Download result with status
+        Download result with status and processing result if auto_process=True
     
-    Example:
+    Example (simplified - one step does everything!):
         # 1. Submit paper with URL
         submit_paper(paper_id="PMC123", pdf_url="https://...")
-        # 2. Download the PDF
+        # 2. Download AND process in one step
         download_paper(paper_id="PMC123")
-        # 3. Now process it
-        process_paper(paper_id="PMC123")
+        # Paper is now ready with embeddings!
     """
     from .api import get_paper_handler
     from .db import get_db
+    from .pipeline import get_paper_processor
     
     db = get_db()
     paper = db.get_paper(paper_id)
@@ -291,11 +290,18 @@ async def download_paper(paper_id: str) -> Dict[str, Any]:
     if paper.pdf_local_path:
         from pathlib import Path
         if Path(paper.pdf_local_path).exists():
-            return {
+            result = {
                 "status": "already_downloaded",
                 "paper_id": paper_id,
                 "pdf_path": paper.pdf_local_path
             }
+            # Still process if requested and not yet processed
+            if auto_process and paper.status != "ready":
+                processor = get_paper_processor()
+                process_result = await processor.process_paper(paper_id)
+                result["auto_processed"] = True
+                result["processing_result"] = process_result
+            return result
     
     handler = get_paper_handler()
     success = await handler.download_pdf(paper_id)
@@ -303,46 +309,59 @@ async def download_paper(paper_id: str) -> Dict[str, Any]:
     if success:
         # Refresh paper data
         paper = db.get_paper(paper_id)
-        return {
+        result = {
             "status": "downloaded",
             "paper_id": paper_id,
             "pdf_path": paper.pdf_local_path if paper else None
         }
+        
+        # Auto-process if requested
+        if auto_process:
+            logger.info(f"Auto-processing paper {paper_id} after download")
+            processor = get_paper_processor()
+            process_result = await processor.process_paper(paper_id)
+            result["auto_processed"] = True
+            result["processing_result"] = process_result
+        
+        return result
     else:
         return {"error": f"Failed to download PDF for {paper_id}", "status": "failed"}
 
 @mcp.tool()
-async def link_paper_pdf(paper_id: str, filename: str = "") -> Dict[str, Any]:
+async def link_paper_pdf(paper_id: str, filename: str = "", auto_process: bool = True) -> Dict[str, Any]:
     """
-    Link an already downloaded PDF to a paper for processing.
+    Link an already downloaded PDF to a paper and optionally process it.
     
     Use this when the PDF was downloaded via paper-search-mcp tools
     (download_arxiv, download_biorxiv, etc.) and is in the shared volume.
     
+    NEW: With auto_process=True (default), this will automatically:
+    1. Link the PDF
+    2. Process the paper (extract sections, generate BioBERT embeddings)
+    3. Make the paper ready for validation jobs
+    
     Args:
         paper_id: Paper ID to link (must be submitted first via submit_paper)
         filename: PDF filename (default: tries {paper_id}.pdf)
+        auto_process: If True (default), automatically process the paper after linking
     
     Returns:
-        Link result with status and pdf_path
+        Link result with status, pdf_path, and processing result if auto_process=True
     
-    Example workflow:
+    Example workflow (simplified):
         # 1. Search and download via paper-search-mcp
         # download_arxiv("2106.12345") -> saves to /shared/papers/2106.12345.pdf
         
         # 2. Submit paper to paperstream
         submit_paper(paper_id="2106.12345", title="My Paper")
         
-        # 3. Link the already downloaded PDF
+        # 3. Link AND process in one step!
         link_paper_pdf(paper_id="2106.12345")
-        # OR with explicit filename:
-        link_paper_pdf(paper_id="2106.12345", filename="2106.12345.pdf")
-        
-        # 4. Process the paper
-        process_paper(paper_id="2106.12345")
+        # Paper is now ready with embeddings!
     """
     from .api import get_paper_handler
     from .db import get_db
+    from .pipeline import get_paper_processor
     
     db = get_db()
     paper = db.get_paper(paper_id)
@@ -360,7 +379,21 @@ async def link_paper_pdf(paper_id: str, filename: str = "") -> Dict[str, Any]:
         else:
             filename = f"{paper_id}.pdf"
     
-    return handler.link_downloaded_paper(paper_id, filename)
+    link_result = handler.link_downloaded_paper(paper_id, filename)
+    
+    # Auto-process if requested and link was successful
+    if auto_process and link_result.get("status") == "linked":
+        logger.info(f"Auto-processing paper {paper_id} after linking PDF")
+        processor = get_paper_processor()
+        process_result = await processor.process_paper(paper_id)
+        
+        return {
+            **link_result,
+            "auto_processed": True,
+            "processing_result": process_result
+        }
+    
+    return link_result
 
 @mcp.tool()
 async def list_shared_papers() -> Dict[str, Any]:
@@ -649,6 +682,17 @@ async def api_submit_paper(request: Request) -> JSONResponse:
         logger.error(f"Error in submit_paper: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
+async def api_process_pending(request: Request) -> JSONResponse:
+    """POST /api/papers/process-pending - Process all pending papers with PDFs"""
+    try:
+        from .api import get_paper_handler
+        handler = get_paper_handler()
+        result = await handler.process_pending_papers()
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"Error in process_pending: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 async def api_get_paper(request: Request) -> JSONResponse:
     """GET /api/papers/{paper_id}"""
     paper_id = request.path_params["paper_id"]
@@ -688,60 +732,320 @@ async def api_list_rules(request: Request) -> JSONResponse:
     return JSONResponse({"rules": rules})
 
 async def api_get_active_rules(request: Request) -> JSONResponse:
-    """GET /api/rules/active - Unity endpoint for active rules"""
-    from .db import get_db
-    db = get_db()
-    rules = db.get_active_rules()
+    """GET /api/rules/active - Unity endpoint for ALL rules WITH EMBEDDINGS
     
-    # Format for Unity client
+    Returns ALL rules (regardless of is_active flag) because Unity needs to
+    check every paper against EVERY rule to find which ones apply.
+    """
+    from .db import get_db
+    import base64
+    
+    db = get_db()
+    rules = db.get_active_rules()  # Returns ALL rules now!
+    
+    # Format for Unity client - INCLUDE EMBEDDINGS for matching!
     rules_data = []
     for rule in rules:
-        rules_data.append({
+        rule_dict = {
             "rule_id": rule.rule_id,
             "question": rule.question,
             "threshold": rule.threshold,
-            "is_active": rule.is_active
-        })
+            "is_active": True  # Always return as active - Unity needs all!
+        }
+        
+        # CRITICAL: Include embeddings for Unity matching!
+        if rule.pos_embedding:
+            rule_dict["pos_embedding_b64"] = base64.b64encode(rule.pos_embedding).decode("ascii")
+        
+        if rule.neg_embedding:
+            rule_dict["neg_embedding_b64"] = base64.b64encode(rule.neg_embedding).decode("ascii")
+        
+        rules_data.append(rule_dict)
     
     return JSONResponse({"rules": rules_data, "count": len(rules_data)})
 
-async def api_get_jobs(request: Request) -> JSONResponse:
-    """GET /api/jobs/next - Android endpoint"""
+
+async def api_get_rule_chunks(request: Request) -> JSONResponse:
+    """
+    GET /api/rules/{rule_id}/chunks - Get rule as molecule chunks
+    GET /api/rule-chunks?rule_id=... - Alternative with query param
+    
+    Returns rule with 2 chunks (positive/negative) for Unity "Rule-Molecule" visualization:
+    {
+        "rule_id": "...",
+        "question": "...",
+        "chunks": [
+            {
+                "chunk_id": 0,
+                "chunk_type": "positive",
+                "embedding_b64": "...",
+                "color": {"r": 0.2, "g": 0.9, "b": 0.3},  // Green
+                "connects_to": [1]
+            },
+            {
+                "chunk_id": 1,
+                "chunk_type": "negative", 
+                "embedding_b64": "...",
+                "color": {"r": 0.9, "g": 0.2, "b": 0.2},  // Red
+                "connects_to": []
+            }
+        ],
+        "molecule_config": {"layout": "dipole", ...}
+    }
+    """
+    # Support both path param and query param
+    rule_id = request.path_params.get("rule_id")
+    if not rule_id:
+        rule_id = request.query_params.get("rule_id")
+    
+    if not rule_id:
+        return JSONResponse({"error": "rule_id required"}, status_code=400)
+    
+    from .api.rule_handler import get_rule_handler
+    handler = get_rule_handler()
+    
+    result = handler.get_rule_chunks(rule_id)
+    if not result:
+        return JSONResponse({"error": "Rule not found"}, status_code=404)
+    
+    return JSONResponse(result)
+
+
+async def api_get_all_rule_chunks(request: Request) -> JSONResponse:
+    """
+    GET /api/rules/chunks - Get ALL rules as molecule chunks
+    
+    Returns all active rules with their chunk representations.
+    Unity can render all rule-molecules at once.
+    """
+    from .api.rule_handler import get_rule_handler
+    handler = get_rule_handler()
+    
+    rules_with_chunks = handler.list_rules_with_chunks()
+    
+    return JSONResponse({
+        "rules": rules_with_chunks,
+        "count": len(rules_with_chunks),
+        "molecule_config": {
+            "embedding_dim": 768,
+            "layout": "dipole",
+            "scale": 1.0
+        }
+    })
+
+
+# =========================
+# Jobs API - 1 Job = 1 Paper
+# =========================
+
+async def api_get_job_stats(request: Request) -> JSONResponse:
+    """
+    GET /api/jobs/stats - Get job queue statistics
+    
+    Shows validation progress and round-robin status.
+    """
+    from .db import get_db
+    db = get_db()
+    
+    with db.get_connection() as conn:
+        # Paper status counts
+        status_counts = {}
+        for row in conn.execute("SELECT status, COUNT(*) as cnt FROM papers GROUP BY status"):
+            status_counts[row['status']] = row['cnt']
+        
+        # Papers with embeddings (ready for validation)
+        ready_with_embeddings = conn.execute("""
+            SELECT COUNT(DISTINCT p.paper_id) 
+            FROM papers p
+            JOIN paper_sections ps ON p.paper_id = ps.paper_id
+            WHERE p.status = 'ready' AND ps.embedding IS NOT NULL
+        """).fetchone()[0]
+        
+        # Total validations
+        total_validations = conn.execute("SELECT COUNT(*) FROM paper_validations").fetchone()[0]
+        
+        # Validations per paper (round-robin distribution)
+        validation_dist = {}
+        for row in conn.execute("""
+            SELECT p.paper_id, p.title, COUNT(pv.paper_id) as validations
+            FROM papers p
+            LEFT JOIN paper_validations pv ON p.paper_id = pv.paper_id
+            WHERE p.status = 'ready'
+            GROUP BY p.paper_id
+            ORDER BY validations DESC
+            LIMIT 20
+        """):
+            validation_dist[row['paper_id']] = {
+                'title': row['title'][:50] if row['title'] else '?',
+                'validations': row['validations']
+            }
+        
+        # Active assignments
+        active_assignments = conn.execute("""
+            SELECT COUNT(*) FROM paper_assignments 
+            WHERE expires_at > CURRENT_TIMESTAMP
+        """).fetchone()[0]
+    
+    return JSONResponse({
+        "paper_status": status_counts,
+        "ready_with_embeddings": ready_with_embeddings,
+        "total_validations": total_validations,
+        "active_assignments": active_assignments,
+        "validation_distribution": validation_dist,
+        "round_robin_enabled": True
+    })
+
+
+async def api_get_next_job(request: Request) -> JSONResponse:
+    """
+    GET /api/jobs/next - Get next paper to validate
+    
+    Android calls this to get ONE paper with PDF thumbnail.
+    Android already has all rules from /api/rules/active with embeddings.
+    Android validates paper locally against all rules.
+    
+    Returns:
+    {
+        "status": "assigned",
+        "job": {
+            "paper_id": "...",
+            "title": "...",
+            "pdf_thumbnail_b64": "base64...",
+            "expires_in_seconds": 600
+        }
+    }
+    """
     device_id = request.query_params.get("device_id")
     if not device_id:
         return JSONResponse({"error": "device_id required"}, status_code=400)
     
-    limit = int(request.query_params.get("limit", 5))
-    
-    from .api import get_job_handler
+    from .api.job_handler import get_job_handler
     handler = get_job_handler()
-    result = handler.get_next_jobs(device_id, limit)
+    result = handler.get_next_job(device_id)
     return JSONResponse(result)
 
-async def api_submit_validation(request: Request) -> JSONResponse:
-    """POST /api/validation/submit - Android endpoint"""
+
+async def api_get_paper_chunks(request: Request) -> JSONResponse:
+    """
+    GET /api/papers/{paper_id}/chunks - Get paper as molecule chunks
+    GET /api/chunks?paper_id=... - Alternative with query param (for DOIs with /)
+    
+    Returns all section embeddings for Unity "Paper-Molecule" visualization:
+    {
+        "paper_id": "...",
+        "title": "...",
+        "chunks": [
+            {
+                "chunk_id": 0,
+                "section_name": "abstract",
+                "text_preview": "First 500 chars...",
+                "embedding_b64": "...",  // 768-dim BioBERT
+                "color": {"r": 0.2, "g": 0.6, "b": 0.9},
+                "position": {"x": 0, "y": 0, "z": 0},
+                "connects_to": [1]  // Links to next chunk
+            },
+            ...
+        ],
+        "molecule_config": {
+            "chunk_size": 768,
+            "layout": "chain",  // or "spiral", "cluster"
+            "scale": 1.0
+        }
+    }
+    """
+    # Support both path param and query param (for DOIs with /)
+    paper_id = request.path_params.get("paper_id")
+    if not paper_id:
+        paper_id = request.query_params.get("paper_id")
+    
+    if not paper_id:
+        return JSONResponse({"error": "paper_id required"}, status_code=400)
+    
+    from .api.job_handler import get_job_handler
+    handler = get_job_handler()
+    
+    # Get paper info
+    from .db import get_db
+    db = get_db()
+    paper = db.get_paper(paper_id)
+    
+    if not paper:
+        return JSONResponse({"error": "Paper not found"}, status_code=404)
+    
+    # Get chunks
+    chunks = handler._get_paper_chunks(paper_id)
+    
+    if not chunks:
+        return JSONResponse({
+            "error": "Paper not processed yet (no chunks)",
+            "paper_id": paper_id
+        }, status_code=404)
+    
+    return JSONResponse({
+        "paper_id": paper_id,
+        "title": paper.title or "Unknown",
+        "chunks": chunks,
+        "chunks_count": len(chunks),
+        "molecule_config": {
+            "embedding_dim": 768,
+            "layout": "chain",
+            "scale": 1.0,
+            "connection_type": "sequential"
+        }
+    })
+
+
+async def api_submit_job(request: Request) -> JSONResponse:
+    """
+    POST /api/jobs/submit - Submit paper validation results
+    
+    Android sends:
+    {
+        "device_id": "...",
+        "paper_id": "...",
+        "results": [
+            {"rule_id": "is_rct", "matched": true, "confidence": 0.85, "regions": [[x1,y1,x2,y2]]},
+            {"rule_id": "has_placebo", "matched": false, "confidence": 0.2},
+            ...
+        ]
+    }
+    
+    Returns:
+    {
+        "accepted": true,
+        "paper_id": "...",
+        "rules_matched": 5,
+        "rules_checked": 18,
+        "points_earned": 86
+    }
+    """
     try:
         body = await request.json()
         device_id = body.get("device_id")
+        paper_id = body.get("paper_id")
         results = body.get("results", [])
         
-        if not device_id:
-            return JSONResponse({"error": "device_id required"}, status_code=400)
+        if not device_id or not paper_id:
+            return JSONResponse({"error": "device_id and paper_id required"}, status_code=400)
         
-        from .api import get_job_handler
+        from .api.job_handler import get_job_handler
         handler = get_job_handler()
-        result = handler.submit_results(device_id, results)
+        result = handler.submit_results(device_id, paper_id, results)
         
-        # Emit SSE event if Unity clients connected
+        # Emit SSE event for Unity dashboard
         from .api.sse_stream import get_unity_sse_stream
         sse = get_unity_sse_stream()
         if sse.get_client_count() > 0:
-            await sse.emit_leaderboard_update([], [device_id])
+            await sse.emit_validation_result(paper_id, results)
         
         return JSONResponse(result)
     except Exception as e:
-        logger.error(f"Error in submit_validation: {e}")
+        logger.error(f"Error in api_submit_job: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+# =========================
+# Device API
+# =========================
 
 async def api_register_device(request: Request) -> JSONResponse:
     """POST /api/devices/register"""
@@ -823,30 +1127,133 @@ async def unity_sse_handler(request: Request) -> StreamingResponse:
 
 async def health_check(request: Request) -> JSONResponse:
     """GET /health"""
+    # Check Qdrant connection
+    qdrant_status = "unknown"
+    try:
+        from .db.vector_store import health_check as qdrant_health
+        qdrant_info = qdrant_health()
+        qdrant_status = qdrant_info.get("status", "unknown")
+    except Exception as e:
+        qdrant_status = f"error: {e}"
+    
     return JSONResponse({
         "status": "healthy",
         "timestamp": time.time(),
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "qdrant": qdrant_status
     })
+
+
+# =========================
+# Qdrant Vector Store API
+# =========================
+
+async def api_qdrant_sync(request: Request) -> JSONResponse:
+    """POST /api/qdrant/sync - Sync SQLite data to Qdrant"""
+    try:
+        from .db.vector_store import (
+            init_collections, 
+            sync_papers_from_sqlite, 
+            sync_rules_from_sqlite,
+            health_check as qdrant_health
+        )
+        
+        # Initialize collections if needed
+        init_collections()
+        
+        # Sync papers
+        papers_synced = sync_papers_from_sqlite("data/paperstream.db")
+        
+        # Sync rules
+        rules_synced = sync_rules_from_sqlite("data/paperstream.db")
+        
+        return JSONResponse({
+            "status": "synced",
+            "papers_synced": papers_synced,
+            "rules_synced": rules_synced,
+            "qdrant_health": qdrant_health()
+        })
+    except Exception as e:
+        logger.error(f"Qdrant sync failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_qdrant_status(request: Request) -> JSONResponse:
+    """GET /api/qdrant/status - Get Qdrant vector store status"""
+    try:
+        from .db.vector_store import health_check as qdrant_health
+        return JSONResponse(qdrant_health())
+    except Exception as e:
+        return JSONResponse({"error": str(e), "status": "unavailable"}, status_code=503)
+
+
+async def api_qdrant_search_papers(request: Request) -> JSONResponse:
+    """POST /api/qdrant/search/papers - Search similar papers"""
+    try:
+        body = await request.json()
+        embedding = body.get("embedding")  # 768-dim list
+        limit = body.get("limit", 10)
+        
+        if not embedding:
+            return JSONResponse({"error": "embedding required"}, status_code=400)
+        
+        from .db.vector_store import search_similar_papers
+        results = search_similar_papers(embedding, limit=limit)
+        
+        return JSONResponse({
+            "results": [
+                {"id": r.id, "score": r.score, "payload": r.payload}
+                for r in results
+            ]
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_qdrant_match_rules(request: Request) -> JSONResponse:
+    """POST /api/qdrant/match/rules - Match paper embedding against all rules"""
+    try:
+        body = await request.json()
+        paper_embedding = body.get("paper_embedding")  # 768-dim list
+        limit = body.get("limit", 20)
+        
+        if not paper_embedding:
+            return JSONResponse({"error": "paper_embedding required"}, status_code=400)
+        
+        from .db.vector_store import match_paper_to_rules
+        results = match_paper_to_rules(paper_embedding, limit=limit)
+        
+        return JSONResponse({"matches": results})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # =========================
 # Route Definitions
 # =========================
 
 api_routes = [
-    # Papers
+    # Papers (more specific routes first!)
     Route("/api/papers/submit", api_submit_paper, methods=["POST"]),
-    Route("/api/papers", api_list_papers, methods=["GET"]),
+    Route("/api/papers/process-pending", api_process_pending, methods=["POST"]),  # Process pending papers
+    Route("/api/papers/{paper_id}/chunks", api_get_paper_chunks, methods=["GET"]),  # Molecule chunks - BEFORE {paper_id}!
     Route("/api/papers/{paper_id}", api_get_paper, methods=["GET"]),
+    Route("/api/papers", api_list_papers, methods=["GET"]),
+    Route("/api/chunks", api_get_paper_chunks, methods=["GET"]),  # Alternative with ?paper_id= for DOIs
     
-    # Rules
+    # Rules - Android/Unity gets ALL rules with embeddings (more specific first!)
     Route("/api/rules/create", api_create_rule, methods=["POST"]),
-    Route("/api/rules/active", api_get_active_rules, methods=["GET"]),  # Unity endpoint
+    Route("/api/rules/chunks", api_get_all_rule_chunks, methods=["GET"]),  # ALL rules as chunks
+    Route("/api/rules/active", api_get_active_rules, methods=["GET"]),  # ALL rules with embeddings!
+    Route("/api/rules/{rule_id}/chunks", api_get_rule_chunks, methods=["GET"]),  # Single rule chunks
+    Route("/api/rules/{rule_id}", api_get_rule_chunks, methods=["GET"]),  # Alias
     Route("/api/rules", api_list_rules, methods=["GET"]),
+    Route("/api/rule-chunks", api_get_rule_chunks, methods=["GET"]),  # Alternative with ?rule_id=
     
-    # Jobs (Android/Unity)
-    Route("/api/jobs/next", api_get_jobs, methods=["GET"]),
-    Route("/api/validation/submit", api_submit_validation, methods=["POST"]),
+    # Jobs API - 1 Job = 1 Paper (ROUND ROBIN)
+    Route("/api/jobs/stats", api_get_job_stats, methods=["GET"]),  # Queue stats & round-robin info
+    Route("/api/jobs/next", api_get_next_job, methods=["GET"]),
+    Route("/api/jobs/submit", api_submit_job, methods=["POST"]),
+    Route("/api/validation/submit", api_submit_job, methods=["POST"]),  # Alias for Unity compatibility
     
     # Devices
     Route("/api/devices/register", api_register_device, methods=["POST"]),
@@ -860,6 +1267,12 @@ api_routes = [
     
     # Unity SSE
     Route("/api/stream/unity", unity_sse_handler, methods=["GET"]),
+    
+    # Qdrant Vector Store
+    Route("/api/qdrant/status", api_qdrant_status, methods=["GET"]),
+    Route("/api/qdrant/sync", api_qdrant_sync, methods=["POST"]),
+    Route("/api/qdrant/search/papers", api_qdrant_search_papers, methods=["POST"]),
+    Route("/api/qdrant/match/rules", api_qdrant_match_rules, methods=["POST"]),
     
     # Health
     Route("/health", health_check, methods=["GET"]),
