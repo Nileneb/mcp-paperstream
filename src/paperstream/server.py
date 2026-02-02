@@ -895,6 +895,138 @@ async def sse_route(request: Request):
     return await sse_handler(request)
 
 # =========================
+# Auth Endpoints
+# =========================
+from starlette.responses import JSONResponse
+
+# Lazy import auth handler
+_auth_handler = None
+
+def _get_auth_handler():
+    global _auth_handler
+    if _auth_handler is None:
+        from .api import auth_handler
+        _auth_handler = auth_handler
+    return _auth_handler
+
+@mcp.custom_route("/api/auth/moltbook", methods=["POST"])
+async def auth_moltbook_route(request: Request):
+    """
+    Authentifiziert via Moltbook Identity Token.
+    Header: X-Moltbook-Identity: <token>
+    """
+    auth = _get_auth_handler()
+    
+    identity_token = request.headers.get("X-Moltbook-Identity", "")
+    
+    if not identity_token:
+        return JSONResponse(
+            {"success": False, "error": "Missing X-Moltbook-Identity header"},
+            status_code=400
+        )
+    
+    # Token bei Moltbook verifizieren
+    agent = await auth.verify_moltbook_token(identity_token)
+    
+    if not agent:
+        return JSONResponse(
+            {"success": False, "error": "Invalid or expired identity token"},
+            status_code=401
+        )
+    
+    # Session erstellen
+    session = auth.create_session(agent)
+    
+    return JSONResponse({
+        "success": True,
+        "session_token": session.session_id,
+        "player_id": session.player_id,
+        "agent_name": session.agent_name,
+        "karma": session.karma,
+        "expires_in": int(session.expires_at - session.created_at)
+    })
+
+
+@mcp.custom_route("/api/auth/dev", methods=["POST"])
+async def auth_dev_route(request: Request):
+    """
+    Dev-Auth ohne Moltbook (NUR FÜR ENTWICKLUNG!).
+    Body: {"device_id": "xxx", "name": "TestPlayer"}
+    """
+    auth = _get_auth_handler()
+    
+    try:
+        body = await request.json()
+    except:
+        body = {}
+    
+    device_id = body.get("device_id", "unknown")
+    name = body.get("name", "DevPlayer")
+    
+    session = auth.create_dev_session(device_id, name)
+    
+    return JSONResponse({
+        "success": True,
+        "session_token": session.session_id,
+        "player_id": session.player_id,
+        "agent_name": session.agent_name,
+        "karma": 0,
+        "expires_in": 86400,
+        "dev_mode": True
+    })
+
+
+@mcp.custom_route("/api/player/me", methods=["GET"])
+async def player_me_route(request: Request):
+    """Gibt das eigene Spielerprofil zurück."""
+    auth = _get_auth_handler()
+    
+    # Session Token aus Header
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"success": False, "error": "Missing or invalid Authorization header"},
+            status_code=401
+        )
+    
+    session_token = auth_header.replace("Bearer ", "")
+    session = auth.validate_session(session_token)
+    
+    if not session:
+        return JSONResponse(
+            {"success": False, "error": "Invalid or expired session"},
+            status_code=401
+        )
+    
+    player = auth.get_player(session.player_id)
+    
+    if not player:
+        return JSONResponse(
+            {"success": False, "error": "Player not found"},
+            status_code=404
+        )
+    
+    return JSONResponse({
+        "success": True,
+        "player": player
+    })
+
+
+@mcp.custom_route("/api/leaderboard", methods=["GET"])
+async def leaderboard_route(request: Request):
+    """Top Spieler nach Score."""
+    auth = _get_auth_handler()
+    
+    limit = int(request.query_params.get("limit", "10"))
+    leaderboard = auth.get_leaderboard(limit)
+    
+    return JSONResponse({
+        "success": True,
+        "leaderboard": leaderboard
+    })
+
+
+# =========================
 # ASGI App für uvicorn
 # =========================
 # FastMCP 2.x braucht http_app() für uvicorn
@@ -907,6 +1039,7 @@ if __name__ == "__main__":
     import uvicorn
     print(f"🚀 Starting DiffusionBERTScore IoT Server on {HOST}:{PORT}")
     print(f"📡 SSE Endpoint: {SSE_PATH}")
+    print(f"🔐 Auth Endpoints: /api/auth/moltbook, /api/auth/dev")
     print(f"⏱️  Task TTL: {ASSIGN_TTL}s")
     print(f"📊 Max inflight per client: {MAX_INFLIGHT_PER_CLIENT}")
     uvicorn.run(app, host=HOST, port=PORT)
